@@ -445,8 +445,45 @@ No unit tests. Verification is manual against a running deployment.
   Restart clients or shorten `default-expires` during rollout.
 
 - **Healthchecks added (Issue 7):** compose now health-checks mariadb, redis,
-  coturn (UDP 3478), proxy (TCP 5061), conference (UDP 6064). Monitor proxy
-  `503`s, cert expiry, conference failures, RTP-relay.
+  coturn (UDP 3478), proxy (TCP 5061 + cert validity — see below), conference
+  (UDP 6064). Monitor proxy `503`s, cert expiry, conference failures, RTP-relay.
+
+- **Proxy healthcheck validates the served cert (not just TCP):** the proxy
+  healthcheck runs `openssl s_client ... | openssl x509 -checkend 0` on
+  127.0.0.1:5061 and fails (unhealthy) when the cert flexisip serves is expired.
+  A TCP-only check would report healthy while serving a stale cert (the 2.6.0
+  reload regression below). openssl is in the proxy base image; if a future
+  image drops it, this healthcheck will false-positive and must be adjusted.
+
+- **2.6.0 TLS cert live-reload is broken on multi-transport configs:** with
+  `transports=sips:0.0.0.0:5061 sip:127.0.0.1:5060`, flexisip 2.6.0 fails to
+  reload the TLS cert on ACME renewal. sofia-sip logs
+  `tport_update_certificate: no transport found for 0.0.0.0:5061` — the
+  transports were bound to the individual IPs (139.x.x.x, 172.17.0.1, etc.)
+  at startup, but flexisip passes `0.0.0.0:5061` to
+  `nta_agent_update_tport_certificates`, so sofia-sip finds no matching
+  transport. The on-disk cert is renewed by ACME but never reaches the wire;
+  flexisip keeps serving the cert it loaded at startup until it expires.
+  Upstream commit `7270a857` ("fix: sofia-sip - certificate update with
+  multiple transports", Mar 2025) targeted this but did not land in 2.6.0
+  (or regressed). **2.6.1 (released 2026-07-30) is the hotfix.** Diagnostic
+  procedure: set `log-level=debug`, `tls-certificates-check-interval=1` (1
+  minute — see below), restart proxy, `touch` the cert files in the
+  `flexisip_certs` volume from the host to bump mtime, wait 60s, then
+  `docker logs --since 2m flexisip-proxy | grep -iE 'updateTransport|tport_update'`.
+  Revert both config changes after. See also `flexisip 2.6.0` tag's
+  `agent.cc::updateTransport` — note that `lastModificationTime` is advanced
+  *unconditionally* after the reload attempt, so a failed reload is not
+  retried until the next cert mtime change (next ACME renewal).
+
+- **`tls-certificates-check-interval` default unit is MINUTES, not seconds:**
+  the config comment says "auto-reloads certificates every 60 seconds" but
+  the flexisip config reference documents this parameter as type
+  `DurationMIN` with default unit `minute`. So `=60` means 60 **minutes**
+  (hourly), not 60 seconds. The hourly cadence is fine in practice (ACME
+  renews every 12h), but the comment is wrong. To set 60 seconds, use
+  `tls-certificates-check-interval=60s` (with the `s` unit suffix). Do NOT
+  leave a bare number and assume seconds.
 
 - **DoSProtection disabled:** The `[module::DoSProtection]` section in
   `config/flexisip.conf` sets `enabled=false` because the module
