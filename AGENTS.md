@@ -455,22 +455,30 @@ No unit tests. Verification is manual against a running deployment.
   reload regression below). openssl is in the proxy base image; if a future
   image drops it, this healthcheck will false-positive and must be adjusted.
 
-- **2.6.0 TLS cert live-reload is broken on multi-transport configs:** with
-  `transports=sips:0.0.0.0:5061 sip:127.0.0.1:5060`, flexisip 2.6.0 fails to
-  reload the TLS cert on ACME renewal. sofia-sip logs
+- **TLS cert live-reload fails when sips is bound to 0.0.0.0 — fixed by binding
+  a concrete IP (affects 2.6.0 AND 2.6.1):** with
+  `transports=sips:0.0.0.0:5061 sip:127.0.0.1:5060`, flexisip fails to reload
+  the TLS cert on ACME renewal. sofia-sip logs
   `tport_update_certificate: no transport found for 0.0.0.0:5061` — the
   transports were bound to the individual IPs (139.x.x.x, 172.17.0.1, etc.)
-  at startup, but flexisip passes `0.0.0.0:5061` to
+  at startup, but flexisip passes the raw `0.0.0.0:5061` back to
   `nta_agent_update_tport_certificates`, so sofia-sip finds no matching
   transport. The on-disk cert is renewed by ACME but never reaches the wire;
   flexisip keeps serving the cert it loaded at startup until it expires.
-  Upstream commit `7270a857` ("fix: sofia-sip - certificate update with
-  multiple transports", Mar 2025) targeted this but did not land in 2.6.0
-  (or regressed). **2.6.1 (released 2026-07-30) is the hotfix.** Diagnostic
-  procedure: set `log-level=debug`, `tls-certificates-check-interval=1` (1
-  minute — see below), restart proxy, `touch` the cert files in the
-  `flexisip_certs` volume from the host to bump mtime, wait 60s, then
+  This reproduces on **2.6.1** (the `7270a857` "multi transports" fix did NOT
+  resolve it — verified live).
+  **Fix (verified 2026-08-10):** bind sips to the concrete public IP instead of
+  `0.0.0.0` — `transports=sips:<SIP_IP>:5061 sip:127.0.0.1:5060`. sofia-sip
+  then has a real bound transport to update, so the reload succeeds. Because
+  loopback TLS is no longer bound, the conference's `outbound-proxy` must also
+  target `<SIP_IP>:5061`, and the compose healthcheck must probe `${SIP_IP}:5061`.
+  Diagnostic procedure (to confirm a reload works/fails): set
+  `log-level=debug`, `tls-certificates-check-interval=1` (1 minute — see below),
+  restart proxy, `touch` the cert files in the `flexisip_certs` volume from the
+  host to bump mtime, wait 60s, then
   `docker logs --since 2m flexisip-proxy | grep -iE 'updateTransport|tport_update'`.
+  A successful reload logs `Updating TLS certificate for transport:
+  sips:139.100.227.125:5061` with NO following `Error while updating` line.
   Revert both config changes after. See also `flexisip 2.6.0` tag's
   `agent.cc::updateTransport` — note that `lastModificationTime` is advanced
   *unconditionally* after the reload attempt, so a failed reload is not
