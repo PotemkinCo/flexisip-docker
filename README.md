@@ -21,11 +21,14 @@ monitors both upstream repositories and triggers the build on new releases.
 
 | Upstream | Image | Tag examples |
 |---|---|---|
-| `flexisip` | `ghcr.io/telecrypt-io/flexisip-proxy` | `2.6.0`, `latest` |
-| `flexisip-conference` | `ghcr.io/telecrypt-io/flexisip-conference` | `1.0.0`, `latest` |
+| `flexisip` | `ghcr.io/telecrypt-io/flexisip-proxy` | `2.6.1` |
+| `flexisip-conference` | `ghcr.io/telecrypt-io/flexisip-conference` | `1.0.1` |
 
-The versioned tag is the primary deliverable. `:latest` is a convenience alias
-that always points to the most recently published version.
+**Strict version fixation:** deployments MUST pin explicit version tags
+(e.g. `2.6.1`), never `:latest`. `:latest` is only a convenience alias for
+CI and is intentionally NOT used in `docker-compose.yml` or on production
+hosts, so a rebuild/republish of `:latest` can never silently change what a
+deployment runs. The versioned tag is the primary deliverable.
 
 ## What's in the box
 
@@ -276,10 +279,11 @@ It has five jobs:
    and publishes them to a GitHub Release.  Runs only when `versions.env` has
    been modified.
 2. **`build-proxy-image`** — multi-stage Docker build (`docker/proxy/Dockerfile`).
-   Clones the `flexisip` repo and its submodules from upstream source, builds
-   the proxy and its dependencies (linphone-sdk, mbedtls, soci, etc.), then
-   produces a minimal runtime image pushed to GHCR with both `:<version>` and
-   `:latest` tags.
+   The CI runner pre-clones `flexisip` + submodules through a headless-Chrome
+   proxy (see `scripts/gitlab-proxy.js`), then the Dockerfile `COPY`s the
+   source in and builds the proxy and its dependencies (linphone-sdk, mbedtls,
+   soci, etc.), producing a minimal runtime image pushed to GHCR with a
+   `:<version>` tag.
 3. **`build-conference-image`** — same for `flexisip-conference`, with
    `-DENABLE_EKT_SERVER=ON` so the EKT plugin is included in the image.
 4. **`smoke-test`** — pulls both freshly-built images, inspects their OCI

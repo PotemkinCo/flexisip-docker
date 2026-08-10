@@ -102,7 +102,7 @@ services:
   # SIP Proxy
   # ---------------------------------------------------------------------------
   proxy:
-    image: ghcr.io/telecrypt-io/flexisip-proxy:latest
+    image: ghcr.io/telecrypt-io/flexisip-proxy:2.6.1
     container_name: flexisip-proxy
     restart: unless-stopped
     network_mode: host
@@ -141,7 +141,7 @@ services:
   # Conference server
   # ---------------------------------------------------------------------------
   conference:
-    image: ghcr.io/telecrypt-io/flexisip-conference:latest
+    image: ghcr.io/telecrypt-io/flexisip-conference:1.0.1
     container_name: flexisip-conference
     restart: unless-stopped
     # Host network: the conference server listens on 127.0.0.1:6064 and the
