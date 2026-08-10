@@ -275,7 +275,12 @@ jobs:
           git clone --depth 1 --branch "${FLEXISIP_VERSION}" \
             https://gitlab.linphone.org/BC/public/flexisip.git src-proxy
           cd src-proxy
-          git submodule update --init --recursive --depth 1
+          # Submodules must be full clones (NOT --depth 1): cmake runs
+          # `git describe` (bc_compute_full_version) on sofia-sip and
+          # linphone-sdk, which needs tags/full history. The main flexisip
+          # repo can stay shallow because FLEXISIP_VERSION is supplied to its
+          # cmake directly.
+          git submodule update --init --recursive
           echo "submodules:"
           git submodule status --recursive
 
@@ -368,7 +373,9 @@ jobs:
           git clone --depth 1 --branch "${FLEXISIP_CONFERENCE_VERSION}" \
             https://gitlab.linphone.org/BC/public/flexisip-conference.git src-conf
           cd src-conf
-          git submodule update --init --recursive --depth 1
+          # Full (non-shallow) recursive submodules: cmake's git-describe
+          # version detection needs tags/history in sofia-sip and linphone-sdk.
+          git submodule update --init --recursive
           echo "submodules:"
           git submodule status --recursive
 
