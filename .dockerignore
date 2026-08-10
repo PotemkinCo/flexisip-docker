@@ -1,0 +1,13 @@
+# Keep the Docker build context small. The upstream source (flexisip,
+# flexisip-conference + their submodules) is pre-cloned on the CI runner
+# into src-proxy/ and src-conf/ and passed in via COPY. Nothing else is
+# needed in the build context except the entrypoint scripts under docker/.
+# Whitelist those and exclude everything else.
+
+*
+!docker/
+!docker/**
+!src-proxy/
+!src-proxy/**
+!src-conf/
+!src-conf/**

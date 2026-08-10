@@ -1,0 +1,12 @@
+{
+  "name": "flexisip-docker-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Support scripts for flexisip-docker CI (gitlab.linphone.org proxy)",
+  "scripts": {
+    "proxy": "node gitlab-proxy.js"
+  },
+  "dependencies": {
+    "playwright-core": "^1.62.0"
+  }
+}

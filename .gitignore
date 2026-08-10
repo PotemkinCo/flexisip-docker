@@ -9,6 +9,13 @@ work/
 *.tar.bz2
 ccache/
 
+# Node deps for scripts/
+node_modules/
+
+# Pre-cloned upstream source (created by CI, never committed)
+src-proxy/
+src-conf/
+
 # Local environment — real overrides, never committed
 .env.local
 

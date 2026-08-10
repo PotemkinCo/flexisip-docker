@@ -508,57 +508,76 @@ The server never touches source, gitlab, or this repo. All build issues
 live in the CI step (GitHub Actions). All runtime issues live on the
 server or in the config files.
 
-### Auto-bump does NOT trigger a build
+### Auto-bump triggers a build (fixed 2026-08-10)
 
 `auto-bump.yml` commits `versions.env` using `GITHUB_TOKEN` (via
 `stefanzweifel/git-auto-commit-action@v5`). **GitHub Actions does not
-start new workflows from commits made by `GITHUB_TOKEN`** — this is a
-deliberate anti-loop restriction. The step name says "Commit versions.env
-(triggers build workflow)" but that comment is **wrong**: the commit
-does not fire `build.yml`'s `push` trigger.
+start new workflows from commits made by `GITHUB_TOKEN`** — a deliberate
+anti-loop restriction. The old step name "Commit versions.env (triggers
+build workflow)" was wrong: the commit did not fire `build.yml`.
 
 Observed: the auto-bump bumped `versions.env` to 2.6.1 on 2026-07-31
 (commit `4f548a7`). No `build.yml` run occurred for 9 days until manually
 triggered via `workflow_dispatch` on 2026-08-09.
 
-Fix options (not yet implemented):
-- Use a Personal Access Token (PAT) for the auto-bump commit (PAT-authored
-  commits DO trigger downstream workflows).
-- Have `auto-bump.yml` trigger `build.yml` via `gh workflow run build.yml`
-  after committing.
-- Add a separate nightly "build if `versions.env` > `state/built.json`"
-  workflow that fires `workflow_dispatch` on `build.yml`.
+**Fix (implemented 2026-08-10):** `auto-bump.yml` now explicitly fires
+`gh workflow run build.yml --ref main` after committing the version bump
+(the job needs `permissions: actions: write` for this). This is a
+`workflow_dispatch` trigger, which is not subject to the GITHUB_TOKEN
+anti-loop restriction that blocks `push` triggers from bot commits.
 
-### flexisip 2.6.1 added an `xsd` submodule that breaks the build
+### gitlab.linphone.org is behind a WAF — solved via Chrome proxy + pre-clone
 
 Upstream commit `fe9aed81` ("fix(xml): prevent XXE attacks", 2026-06-26)
 added a new submodule `submodules/externals/xsd` to flexisip's
 `.gitmodules`, pointing at `https://gitlab.linphone.org/BC/public/external/xsd.git`.
 
-**This repo is unreachable** (connection timeout after ~135s, not a 404).
-Other repos on the same gitlab server (flexisip, linphone-sdk, sofia-sip,
-hiredis) are reachable from GitHub Actions runners. The `xsd` repo appears
-to be newly created and not fully available on gitlab.
+**This repo is unreachable from plain HTTP clients** (git clone, curl) —
+connection timeout after ~135s, not a 404. Other repos on the same gitlab
+server (flexisip, linphone-sdk, sofia-sip, hiredis) are reachable from
+GitHub Actions runners, but `xsd` is not. Belledonne has a WAF that blocks
+some automated clients. The `xsd` repo appears newly created and not fully
+exposed.
 
 **The proxy build does not use xsd.** flexisip's `CMakeLists.txt` has zero
 references to `xsd`. It is fetched only because `git submodule update --init
---recursive` in the Dockerfile blindly downloads every submodule upstream
-declares — including ones in `linphone-sdk`'s own submodule tree that the
-proxy binary never links against. The 2.6.0 build (which had no `xsd`
-submodule) built and ran fine.
+--recursive` downloads every submodule upstream declares — including ones in
+`linphone-sdk`'s own submodule tree that the proxy binary never links against.
 
-The build's retry loop (5 attempts) makes the failure worse: after `xsd`
-times out twice, the cleanup step (`rm -rf .git/modules/*`) destroys the
-already-fetched `linphone-sdk` submodule handle, causing subsequent retries
-to fail with `fatal: could not get a repository handle for submodule
-'linphone-sdk'` — a cascading failure from the cleanup, not from gitlab.
+**Solution (implemented 2026-08-10):** a headless-Chrome HTTP proxy plus
+pre-clone, keeping the WAF workaround entirely in the CI environment
+(not in the Dockerfiles).
 
-Fix options (not yet implemented):
-- Exclude `xsd` from the recursive fetch (e.g., `git submodule update --init
-  --recursive --filter` or a per-submodule init that skips `xsd`).
-- Redirect gitlab URLs to GitHub mirrors where they exist (`git config
-  --global url.insteadOf`) and skip `xsd` entirely.
-- Wait for gitlab to fix the `xsd` repo availability (uncertain timeline).
+- `scripts/gitlab-proxy.js` — a Node HTTP proxy that routes
+  `gitlab.linphone.org` requests through a headless Chrome browser
+  (via Playwright CDP). Chrome's full browser stack passes Belledonne's
+  WAF, which plain `git`/`curl` does not. Listens on `127.0.0.1:8843`,
+  fetches `https://gitlab.linphone.org/<path>` for each request.
+- Git is pointed at it via `git config --global url.http://127.0.0.1:8843/.insteadOf https://gitlab.linphone.org/`
+  (URL-path rewriting, NOT an HTTP CONNECT proxy — the proxy does not
+  implement CONNECT tunneling).
+- The Dockerfiles no longer `git clone` or fetch submodules. Instead the
+  CI workflow **pre-clones** flexisip / flexisip-conference + all recursive
+  submodules on the runner (through the proxy), and the Dockerfiles
+  `COPY src-proxy/ /src/` (proxy image) or `COPY src-conf/ /src/`
+  (conference image). `.git` is preserved so cmake's `bc_compute_full_version`
+  (git describe) works.
+- `.dockerignore` whitelists only `docker/**`, `src-proxy/**`, `src-conf/**`
+  so the build context stays small.
+- The workflow starts the proxy, waits for it, pre-clones, then stops the
+  proxy before the Docker build (which needs no gitlab access).
+
+**Key constraints of this approach:**
+- The proxy is a path-rewriting proxy, not CONNECT. It cannot be used as an
+  `http_proxy`/`https_proxy` env var for HTTPS URLs (git would send CONNECT).
+- Each build job that touches gitlab (build-debs, build-proxy-image,
+  build-conference-image) starts its own proxy instance and stops it in an
+  `if: always()` step.
+- Docker builds use `network: host` so any residual network access inside
+  the build shares the runner's network.
+- The GitHub Actions runner has Chrome + Node pre-installed
+  (`ubuntu-24.04` image); the workflow installs `playwright-core` and finds
+  Chrome at runtime.
 
 ## Handover docs
 

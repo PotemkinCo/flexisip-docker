@@ -59,37 +59,13 @@ RUN cd /tmp \
  && rm -rf nghttp2-1.51.0 nghttp2-1.51.0.tar.gz \
  && ldconfig
 
-ARG FLEXISIP_VERSION=2.6.0
-# Clone the main repo shallow (fast) then do a full recursive submodule
-# update.  Retry with full cleanup on failure because gitlab.linphone.org
-# is sometimes flaky, and a partial clone leaves submodule trees in a
-# state that git cannot recover from without deleting the .git/modules
-# subtree.
-RUN for i in 1 2 3 4 5; do \
-      if git clone --depth 1 --branch "${FLEXISIP_VERSION}" \
-            https://gitlab.linphone.org/BC/public/flexisip.git /src; then \
-        break; \
-      fi; \
-      echo "git clone failed (attempt $i), retrying in 15s"; \
-      sleep 15; \
-      rm -rf /src; \
-    done
+# The upstream source (flexisip + recursive submodules) is pre-cloned on the
+# CI runner into src-proxy/ (see .github/workflows/build.yml) and passed in
+# here. .git is preserved so cmake's bc_compute_full_version (git describe)
+# works, matching the prior shallow-clone behavior. No gitlab access is
+# needed inside the build.
+COPY src-proxy/ /src/
 WORKDIR /src
-RUN for i in 1 2 3 4 5; do \
-      echo "=== Submodule fetch attempt $i ==="; \
-      if git submodule update --init --recursive; then \
-        uninit=$(git submodule status --recursive 2>/dev/null | grep -c '^-' || true); \
-        if [ "$uninit" -eq 0 ]; then \
-          echo "All submodules OK"; \
-          break; \
-        fi; \
-        echo "Found $uninit uninitialized submodules (git left empty dirs)"; \
-      fi; \
-      echo "Cleaning submodule state and retrying..."; \
-      rm -rf .git/modules/* 2>/dev/null || true; \
-      git submodule foreach --recursive 'rm -rf "$(pwd)"' 2>/dev/null || true; \
-      sleep 30; \
-    done
 RUN cmake -G Ninja -B build \
         -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_INSTALL_PREFIX=/opt/belledonne-communications \

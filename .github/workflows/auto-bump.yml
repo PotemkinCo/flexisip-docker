@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  # Needed to fire build.yml via `gh workflow run` after a version bump.
+  actions: write
 
 jobs:
   detect-and-update:
@@ -130,9 +132,19 @@ jobs:
           echo "New versions.env:"
           cat versions.env
 
-      - name: Commit versions.env (triggers build workflow)
+      - name: Commit versions.env
         if: steps.decide.outputs.update_flexisip != '' || steps.decide.outputs.update_conference != ''
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "bump: flexisip=${{ steps.decide.outputs.update_flexisip || steps.current.outputs.flexisip }} flexisip-conference=${{ steps.decide.outputs.update_conference || steps.current.outputs.conference }}"
           file_pattern: versions.env
+
+      # A GITHUB_TOKEN-authored commit does NOT trigger build.yml's push trigger
+      # (GitHub's anti-loop restriction). Explicitly fire the build workflow so
+      # the version bump actually produces a new image.
+      - name: Trigger build workflow
+        if: steps.decide.outputs.update_flexisip != '' || steps.decide.outputs.update_conference != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run build.yml --ref main

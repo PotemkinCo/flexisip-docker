@@ -70,6 +70,28 @@ jobs:
           sudo cmake --build "${bindir}" --target install
           rm -rf "${srcpkg}" "${srcdir}" "${bindir}"
 
+      - name: Start gitlab proxy (WAF workaround)
+        run: |
+          set -euo pipefail
+          cd scripts
+          npm install --no-audit --no-fund
+          export CHROME_BIN="${CHROME_BIN:-$(command -v google-chrome-stable || command -v chromium || echo /usr/bin/google-chrome-stable)}"
+          echo "using chrome: $CHROME_BIN"
+          nohup env CHROME_BIN="$CHROME_BIN" node gitlab-proxy.js > gitlab-proxy.log 2>&1 &
+          echo $! > gitlab-proxy.pid
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 "http://127.0.0.1:8843/explore/projects" >/dev/null 2>&1; then
+              echo "gitlab proxy ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "gitlab proxy failed to start"; cat gitlab-proxy.log; exit 1
+
+      - name: Configure git for gitlab proxy
+        run: |
+          git config --global url.http://127.0.0.1:8843/.insteadOf https://gitlab.linphone.org/
+
       - name: Clone flexisip at pinned tag
         run: |
           . ./versions.env
@@ -200,6 +222,14 @@ jobs:
             src-conf/build/*.deb
           fail_on_unmatched_files: false
 
+      - name: Stop gitlab proxy
+        if: always()
+        run: |
+          if [ -f scripts/gitlab-proxy.pid ]; then kill "$(cat scripts/gitlab-proxy.pid)" 2>/dev/null || true; fi
+          pkill -f "gitlab-proxy" 2>/dev/null || true
+          pkill -f "google-chrome.*9222" 2>/dev/null || true
+          true
+
   # -------------------------------------------------------------------------
   # Build & push proxy image (multi-stage Dockerfile, no .deb input)
   # -------------------------------------------------------------------------
@@ -216,6 +246,46 @@ jobs:
           set -euo pipefail
           . ./versions.env
           echo "FLEXISIP_VERSION=${FLEXISIP_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Start gitlab proxy (WAF workaround)
+        run: |
+          set -euo pipefail
+          cd scripts
+          npm install --no-audit --no-fund
+          # chrome is pre-installed on the runner; find it (playwright-core needs it)
+          export CHROME_BIN="${CHROME_BIN:-$(command -v google-chrome-stable || command -v chromium || echo /usr/bin/google-chrome-stable)}"
+          echo "using chrome: $CHROME_BIN"
+          nohup env CHROME_BIN="$CHROME_BIN" node gitlab-proxy.js > gitlab-proxy.log 2>&1 &
+          echo $! > gitlab-proxy.pid
+          # wait for the proxy to come up
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 "http://127.0.0.1:8843/explore/projects" >/dev/null 2>&1; then
+              echo "gitlab proxy ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "gitlab proxy failed to start"; cat gitlab-proxy.log; exit 1
+
+      - name: Pre-clone flexisip + submodules through proxy
+        run: |
+          set -euo pipefail
+          git config --global url.http://127.0.0.1:8843/.insteadOf https://gitlab.linphone.org/
+          rm -rf src-proxy
+          git clone --depth 1 --branch "${FLEXISIP_VERSION}" \
+            https://gitlab.linphone.org/BC/public/flexisip.git src-proxy
+          cd src-proxy
+          git submodule update --init --recursive --depth 1
+          echo "submodules:"
+          git submodule status --recursive
+
+      - name: Stop gitlab proxy
+        if: always()
+        run: |
+          if [ -f scripts/gitlab-proxy.pid ]; then kill "$(cat scripts/gitlab-proxy.pid)" 2>/dev/null || true; fi
+          pkill -f "gitlab-proxy" 2>/dev/null || true
+          pkill -f "google-chrome.*9222" 2>/dev/null || true
+          true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -247,7 +317,8 @@ jobs:
         with:
           context: .
           file: docker/proxy/Dockerfile
-          build-args: FLEXISIP_VERSION=${{ env.FLEXISIP_VERSION }}
+          # src-proxy/ is pre-cloned above and copied into the build by the Dockerfile.
+          network: host
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -270,6 +341,44 @@ jobs:
           set -euo pipefail
           . ./versions.env
           echo "FLEXISIP_CONFERENCE_VERSION=${FLEXISIP_CONFERENCE_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Start gitlab proxy (WAF workaround)
+        run: |
+          set -euo pipefail
+          cd scripts
+          npm install --no-audit --no-fund
+          export CHROME_BIN="${CHROME_BIN:-$(command -v google-chrome-stable || command -v chromium || echo /usr/bin/google-chrome-stable)}"
+          echo "using chrome: $CHROME_BIN"
+          nohup env CHROME_BIN="$CHROME_BIN" node gitlab-proxy.js > gitlab-proxy.log 2>&1 &
+          echo $! > gitlab-proxy.pid
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 "http://127.0.0.1:8843/explore/projects" >/dev/null 2>&1; then
+              echo "gitlab proxy ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "gitlab proxy failed to start"; cat gitlab-proxy.log; exit 1
+
+      - name: Pre-clone flexisip-conference + submodules through proxy
+        run: |
+          set -euo pipefail
+          git config --global url.http://127.0.0.1:8843/.insteadOf https://gitlab.linphone.org/
+          rm -rf src-conf
+          git clone --depth 1 --branch "${FLEXISIP_CONFERENCE_VERSION}" \
+            https://gitlab.linphone.org/BC/public/flexisip-conference.git src-conf
+          cd src-conf
+          git submodule update --init --recursive --depth 1
+          echo "submodules:"
+          git submodule status --recursive
+
+      - name: Stop gitlab proxy
+        if: always()
+        run: |
+          if [ -f scripts/gitlab-proxy.pid ]; then kill "$(cat scripts/gitlab-proxy.pid)" 2>/dev/null || true; fi
+          pkill -f "gitlab-proxy" 2>/dev/null || true
+          pkill -f "google-chrome.*9222" 2>/dev/null || true
+          true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -301,7 +410,8 @@ jobs:
         with:
           context: .
           file: docker/conference/Dockerfile
-          build-args: FLEXISIP_CONFERENCE_VERSION=${{ env.FLEXISIP_CONFERENCE_VERSION }}
+          # src-conf/ is pre-cloned above and copied into the build by the Dockerfile.
+          network: host
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
