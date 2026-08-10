@@ -127,11 +127,12 @@ services:
     # set the global "nat-addresses" to the host's public IP.
     healthcheck:
       # TCP check on the SIP TLS port + validate the served cert is not expired.
-      # openssl s_client reads the cert flexisip serves on 5061; x509 -checkend 0
-      # exits 0 if valid, non-zero if expired. A stale cert loaded at startup but
-      # never reloaded (the 2.6.0 multi-transport reload regression) would pass a
+      # The proxy's sips transport is bound to ${SIP_IP} (the public IP), not
+      # loopback — see config/flexisip.conf. openssl s_client reads the cert
+      # flexisip serves on 5061; x509 -checkend 0 exits 0 if valid, non-zero if
+      # expired. A stale cert loaded at startup but never reloaded would pass a
       # TCP-only check but fail this one. openssl is in the proxy base image.
-      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/5061 && echo | openssl s_client -connect 127.0.0.1:5061 2>/dev/null | openssl x509 -noout -checkend 0 2>/dev/null'"]
+      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/${SIP_IP}/5061 && echo | openssl s_client -connect ${SIP_IP}:5061 2>/dev/null | openssl x509 -noout -checkend 0 2>/dev/null'"]
       interval: 30s
       timeout: 6s
       retries: 5
