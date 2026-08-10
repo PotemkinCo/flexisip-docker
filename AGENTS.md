@@ -491,6 +491,75 @@ No unit tests. Verification is manual against a running deployment.
   containers. For production DoS protection, use external mechanisms (cloud
   firewalls, fail2ban, etc.).
 
+## CI build pipeline — known gaps and notes
+
+### Deployment chain
+
+flexisip is **not installed from source** on the server. The chain is:
+
+```
+upstream flexisip (gitlab.linphone.org)
+  → CI build (GitHub Actions, this repo, .github/workflows/build.yml)
+  → image (ghcr.io/telecrypt-io/flexisip-proxy, ghcr.io/telecrypt-io/flexisip-conference)
+  → server (docker compose pull on the deployment host)
+```
+
+The server never touches source, gitlab, or this repo. All build issues
+live in the CI step (GitHub Actions). All runtime issues live on the
+server or in the config files.
+
+### Auto-bump does NOT trigger a build
+
+`auto-bump.yml` commits `versions.env` using `GITHUB_TOKEN` (via
+`stefanzweifel/git-auto-commit-action@v5`). **GitHub Actions does not
+start new workflows from commits made by `GITHUB_TOKEN`** — this is a
+deliberate anti-loop restriction. The step name says "Commit versions.env
+(triggers build workflow)" but that comment is **wrong**: the commit
+does not fire `build.yml`'s `push` trigger.
+
+Observed: the auto-bump bumped `versions.env` to 2.6.1 on 2026-07-31
+(commit `4f548a7`). No `build.yml` run occurred for 9 days until manually
+triggered via `workflow_dispatch` on 2026-08-09.
+
+Fix options (not yet implemented):
+- Use a Personal Access Token (PAT) for the auto-bump commit (PAT-authored
+  commits DO trigger downstream workflows).
+- Have `auto-bump.yml` trigger `build.yml` via `gh workflow run build.yml`
+  after committing.
+- Add a separate nightly "build if `versions.env` > `state/built.json`"
+  workflow that fires `workflow_dispatch` on `build.yml`.
+
+### flexisip 2.6.1 added an `xsd` submodule that breaks the build
+
+Upstream commit `fe9aed81` ("fix(xml): prevent XXE attacks", 2026-06-26)
+added a new submodule `submodules/externals/xsd` to flexisip's
+`.gitmodules`, pointing at `https://gitlab.linphone.org/BC/public/external/xsd.git`.
+
+**This repo is unreachable** (connection timeout after ~135s, not a 404).
+Other repos on the same gitlab server (flexisip, linphone-sdk, sofia-sip,
+hiredis) are reachable from GitHub Actions runners. The `xsd` repo appears
+to be newly created and not fully available on gitlab.
+
+**The proxy build does not use xsd.** flexisip's `CMakeLists.txt` has zero
+references to `xsd`. It is fetched only because `git submodule update --init
+--recursive` in the Dockerfile blindly downloads every submodule upstream
+declares — including ones in `linphone-sdk`'s own submodule tree that the
+proxy binary never links against. The 2.6.0 build (which had no `xsd`
+submodule) built and ran fine.
+
+The build's retry loop (5 attempts) makes the failure worse: after `xsd`
+times out twice, the cleanup step (`rm -rf .git/modules/*`) destroys the
+already-fetched `linphone-sdk` submodule handle, causing subsequent retries
+to fail with `fatal: could not get a repository handle for submodule
+'linphone-sdk'` — a cascading failure from the cleanup, not from gitlab.
+
+Fix options (not yet implemented):
+- Exclude `xsd` from the recursive fetch (e.g., `git submodule update --init
+  --recursive --filter` or a per-submodule init that skips `xsd`).
+- Redirect gitlab URLs to GitHub mirrors where they exist (`git config
+  --global url.insteadOf`) and skip `xsd` entirely.
+- Wait for gitlab to fix the `xsd` repo availability (uncertain timeline).
+
 ## Handover docs
 
 `handover/` directory contains additional context:
