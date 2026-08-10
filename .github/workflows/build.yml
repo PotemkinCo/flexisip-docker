@@ -275,12 +275,14 @@ jobs:
           git clone --depth 1 --branch "${FLEXISIP_VERSION}" \
             https://gitlab.linphone.org/BC/public/flexisip.git src-proxy
           cd src-proxy
-          # Submodules must be full clones (NOT --depth 1): cmake runs
-          # `git describe` (bc_compute_full_version) on sofia-sip and
-          # linphone-sdk, which needs tags/full history. The main flexisip
-          # repo can stay shallow because FLEXISIP_VERSION is supplied to its
-          # cmake directly.
-          git submodule update --init --recursive
+          # --filter=blob:none: full commit history + tags (so cmake's
+          # `git describe` / bc_compute_full_version works on sofia-sip and
+          # linphone-sdk) but blob contents are deferred, keeping the packfile
+          # small enough for the Chrome proxy (full clones 502). Then
+          # `git reset --hard HEAD` in each submodule lazily fetches and
+          # materializes all blobs so the working tree is complete for COPY.
+          git submodule update --init --recursive --filter=blob:none
+          git submodule foreach --recursive 'git reset --hard HEAD'
           echo "submodules:"
           git submodule status --recursive
 
@@ -373,9 +375,11 @@ jobs:
           git clone --depth 1 --branch "${FLEXISIP_CONFERENCE_VERSION}" \
             https://gitlab.linphone.org/BC/public/flexisip-conference.git src-conf
           cd src-conf
-          # Full (non-shallow) recursive submodules: cmake's git-describe
-          # version detection needs tags/history in sofia-sip and linphone-sdk.
-          git submodule update --init --recursive
+          # --filter=blob:none keeps the packfile small enough for the Chrome
+          # proxy (full clones 502) while retaining tags for git-describe
+          # version detection; git reset --hard HEAD materializes all blobs.
+          git submodule update --init --recursive --filter=blob:none
+          git submodule foreach --recursive 'git reset --hard HEAD'
           echo "submodules:"
           git submodule status --recursive
 
