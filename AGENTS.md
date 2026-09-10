@@ -5,8 +5,8 @@
 Docker image build repository for two Belledonne Communications SIP components.
 Not a source code repository. Delivers:
 
-- **`ghcr.io/telecrypt-io/flexisip-proxy`** — SIP proxy (TLS port 5061)
-- **`ghcr.io/telecrypt-io/flexisip-conference`** — Conference server (E2EE-capable)
+- **`ghcr.io/potemkinco/flexisip-proxy`** — SIP proxy (TLS port 5061)
+- **`ghcr.io/potemkinco/flexisip-conference`** — Conference server (E2EE-capable)
 
 Both images are built from upstream source and published to GHCR. Bonus `.deb`
 packages are published to GitHub Releases (not consumed by Docker).
@@ -283,8 +283,8 @@ gh run list --limit 5
 gh run watch <run-id>
 
 # Pull images locally
-docker pull ghcr.io/telecrypt-io/flexisip-proxy:latest
-docker pull ghcr.io/telecrypt-io/flexisip-conference:latest
+docker pull ghcr.io/potemkinco/flexisip-proxy:latest
+docker pull ghcr.io/potemkinco/flexisip-conference:latest
 ```
 
 ## No PRs
@@ -508,7 +508,7 @@ flexisip is **not installed from source** on the server. The chain is:
 ```
 upstream flexisip (gitlab.linphone.org)
   → CI build (GitHub Actions, this repo, .github/workflows/build.yml)
-  → image (ghcr.io/telecrypt-io/flexisip-proxy, ghcr.io/telecrypt-io/flexisip-conference)
+  → image (ghcr.io/potemkinco/flexisip-proxy, ghcr.io/potemkinco/flexisip-conference)
   → server (docker compose pull on the deployment host)
 ```
 

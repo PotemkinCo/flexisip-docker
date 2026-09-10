@@ -1,4 +1,4 @@
-# TeleCrypt-io flexisip-docker
+# PotemkinCo flexisip-docker
 
 **Unofficial community build** of the Belledonne Flexisip SIP proxy and the
 `flexisip-conference` server, packaged as Docker images on GitHub Container
@@ -21,8 +21,8 @@ monitors both upstream repositories and triggers the build on new releases.
 
 | Upstream | Image | Tag examples |
 |---|---|---|
-| `flexisip` | `ghcr.io/telecrypt-io/flexisip-proxy` | `2.6.1` |
-| `flexisip-conference` | `ghcr.io/telecrypt-io/flexisip-conference` | `1.0.1` |
+| `flexisip` | `ghcr.io/potemkinco/flexisip-proxy` | `2.6.1` |
+| `flexisip-conference` | `ghcr.io/potemkinco/flexisip-conference` | `1.0.1` |
 
 **Strict version fixation:** deployments MUST pin explicit version tags
 (e.g. `2.6.1`), never `:latest`. `:latest` is only a convenience alias for
@@ -56,7 +56,7 @@ HTTP-01 challenge.
 2. The certificate (`cert.pem`) and private key (`privkey.pem`) are written
    into a shared Docker volume (`flexisip_certs`).
 3. The `proxy` container mounts this volume at `/etc/flexisip/tls/` (read-only)
-   and auto-reloads the certificates every 60 seconds.
+   and auto-reloads the certificates every 60 minutes.
 4. The ACME container runs a renewal loop every 12 hours, checking if renewal
    is needed (certs are renewed when <3 days remain).
 
@@ -129,7 +129,7 @@ containers), TURN credentials, and `ENABLE_EKT_SERVER`.
 
 ```bash
 # 1. Get the files onto the server. NO git — extract only what you need:
-curl -fsSL https://github.com/TeleCrypt-io/flexisip-docker/archive/refs/heads/main.tar.gz \
+curl -fsSL https://github.com/PotemkinCo/flexisip-docker/archive/refs/heads/main.tar.gz \
   | tar xz --strip-components=1 \
       flexisip-docker-main/docker-compose.yml \
       flexisip-docker-main/versions.env \
@@ -186,7 +186,7 @@ docker compose up -d
 
 - **Transports:** flexisip 2.6 accepts only `sip:` (UDP) and `sips:` (TLS)
   prefixes in `transports`. A `tcp:` prefix crashes the proxy. The proxy is
-  configured with `sips:0.0.0.0:5061` (client TLS) and
+  configured with `sips:<SIP_IP>:5061` (client TLS) and
   **`sip:127.0.0.1:5060`** — the UDP transport is bound to **loopback**,
   because it exists only for the internal hop to the conference server's UDP
   contact. Binding it to `0.0.0.0` would expose an unencrypted SIP transport
@@ -293,9 +293,9 @@ It has five jobs:
    `state/built.json`.
 
 `.github/workflows/auto-bump.yml` runs nightly. It queries the GitLab API
-for the latest stable tag of each upstream. If a newer version exists that
-isn't already in `state/built.json`, it updates `versions.env` and pushes
-to `main`, which triggers the build.
+for the latest stable tag of each upstream, falls back to the official GitHub
+mirrors when GitLab is temporarily unavailable, and retries a build when a
+version bump was committed but the previous build did not complete.
 
 `versions.env` is the source of truth for which upstream version is built.
 `state/built.json` is the source of truth for which versions have produced

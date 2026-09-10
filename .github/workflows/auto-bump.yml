@@ -37,51 +37,72 @@ jobs:
 
       - name: Query GitLab for latest stable flexisip tag
         id: latest-flexisip
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          response=""
+          source=""
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if response=$(curl -fsSL --connect-timeout 15 \
-                "https://gitlab.linphone.org/api/v4/projects/BC%2Fpublic%2Fflexisip/repository/tags?per_page=20"); then
+            if candidate=$(curl -fsSL --connect-timeout 15 --max-time 45 \
+                "https://gitlab.linphone.org/api/v4/projects/BC%2Fpublic%2Fflexisip/repository/tags?per_page=100") \
+                && jq -e 'type == "array"' >/dev/null <<<"$candidate"; then
+              response="$candidate"
+              source="GitLab"
               break
             fi
             echo "GitLab API call failed (attempt $attempt); retrying in 5s"
             sleep 5
           done
           if [[ -z "${response:-}" ]]; then
-            echo "ERROR: failed to reach GitLab API for flexisip tags" >&2
-            exit 1
+            echo "GitLab API unavailable; falling back to the official GitHub mirror"
+            response=$(curl -fsSL --connect-timeout 15 --max-time 45 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/BelledonneCommunications/flexisip/tags?per_page=100")
+            source="GitHub mirror"
           fi
-          # Pick the first tag that is NOT alpha/beta/rc. GitLab returns newest first.
-          latest=$(echo "$response" | jq -r '[.[] | select(.name | test("-(alpha|beta|rc|dev|pre)") | not)][0].name // empty')
+          latest=$(jq -r '[.[] | .name? | select(type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // empty' <<<"$response")
           if [[ -z "$latest" ]]; then
             echo "ERROR: no stable flexisip tag found" >&2
             exit 1
           fi
-          echo "Latest stable flexisip tag: $latest"
+          echo "Latest stable flexisip tag ($source): $latest"
           echo "tag=$latest" >> "$GITHUB_OUTPUT"
 
       - name: Query GitLab for latest stable flexisip-conference tag
         id: latest-conference
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          response=""
+          source=""
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if response=$(curl -fsSL --connect-timeout 15 \
-                "https://gitlab.linphone.org/api/v4/projects/BC%2Fpublic%2Fflexisip-conference/repository/tags?per_page=20"); then
+            if candidate=$(curl -fsSL --connect-timeout 15 --max-time 45 \
+                "https://gitlab.linphone.org/api/v4/projects/BC%2Fpublic%2Fflexisip-conference/repository/tags?per_page=100") \
+                && jq -e 'type == "array"' >/dev/null <<<"$candidate"; then
+              response="$candidate"
+              source="GitLab"
               break
             fi
             echo "GitLab API call failed (attempt $attempt); retrying in 5s"
             sleep 5
           done
           if [[ -z "${response:-}" ]]; then
-            echo "ERROR: failed to reach GitLab API for flexisip-conference tags" >&2
-            exit 1
+            echo "GitLab API unavailable; falling back to the official GitHub mirror"
+            response=$(curl -fsSL --connect-timeout 15 --max-time 45 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/BelledonneCommunications/flexisip-conference/tags?per_page=100")
+            source="GitHub mirror"
           fi
-          latest=$(echo "$response" | jq -r '[.[] | select(.name | test("-(alpha|beta|rc|dev|pre)") | not)][0].name // empty')
+          latest=$(jq -r '[.[] | .name? | select(type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // empty' <<<"$response")
           if [[ -z "$latest" ]]; then
             echo "ERROR: no stable flexisip-conference tag found" >&2
             exit 1
           fi
-          echo "Latest stable flexisip-conference tag: $latest"
+          echo "Latest stable flexisip-conference tag ($source): $latest"
           echo "tag=$latest" >> "$GITHUB_OUTPUT"
 
       - name: Decide whether to update versions.env
@@ -106,14 +127,26 @@ jobs:
             update_conference="$LATEST_CONFERENCE"
           fi
 
+          # A GITHUB_TOKEN-authored versions.env commit does not trigger the
+          # push workflow. Also retry a build that failed after versions.env
+          # was updated, even when the upstream version has not changed.
+          needs_build=false
+          if [[ -n "$update_flexisip" || -n "$update_conference" ||
+                "$CUR_FLEXISIP" != "$built_flexisip" ||
+                "$CUR_CONFERENCE" != "$built_conference" ]]; then
+            needs_build=true
+          fi
+
           {
             echo "update_flexisip=${update_flexisip}"
             echo "update_conference=${update_conference}"
+            echo "needs_build=${needs_build}"
           } >> "$GITHUB_OUTPUT"
 
           echo "Decision:"
           echo "  flexisip:        current=$CUR_FLEXISIP  built=$built_flexisip  latest=$LATEST_FLEXISIP  -> ${update_flexisip:-no-change}"
           echo "  flexisip-conference: current=$CUR_CONFERENCE built=$built_conference latest=$LATEST_CONFERENCE -> ${update_conference:-no-change}"
+          echo "  build needed: ${needs_build}"
 
       - name: Update versions.env
         if: steps.decide.outputs.update_flexisip != '' || steps.decide.outputs.update_conference != ''
@@ -143,7 +176,7 @@ jobs:
       # (GitHub's anti-loop restriction). Explicitly fire the build workflow so
       # the version bump actually produces a new image.
       - name: Trigger build workflow
-        if: steps.decide.outputs.update_flexisip != '' || steps.decide.outputs.update_conference != ''
+        if: steps.decide.outputs.needs_build == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

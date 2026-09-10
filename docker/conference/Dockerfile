@@ -81,11 +81,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/opt/belledonne-communications/flexisip-conference/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 LABEL org.opencontainers.image.title="flexisip-conference"
-LABEL org.opencontainers.image.description="Conference server (unofficial community build) for TeleCrypt-io, with EKT plugin for E2EE"
+LABEL org.opencontainers.image.description="Conference server (unofficial community build) for PotemkinCo, with EKT plugin for E2EE"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
-LABEL org.opencontainers.image.source="https://github.com/TeleCrypt-io/flexisip-docker"
-LABEL org.opencontainers.image.vendor="TeleCrypt-io"
-LABEL org.opencontainers.image.documentation="https://github.com/TeleCrypt-io/flexisip-docker/blob/main/README.md"
+LABEL org.opencontainers.image.source="https://github.com/PotemkinCo/flexisip-docker"
+LABEL org.opencontainers.image.vendor="PotemkinCo"
+LABEL org.opencontainers.image.documentation="https://github.com/PotemkinCo/flexisip-docker/blob/main/README.md"
 
 # Runtime libraries the conference binary links against. Names use the t64
 # ABI where the upstream .deb's Depends declares them. Note: no python3

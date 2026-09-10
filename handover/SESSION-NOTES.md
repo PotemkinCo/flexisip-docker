@@ -164,3 +164,41 @@ not be used on production hosts.
 - `685eebc` ci: use --filter=blob:none + reset for submodules
 - `791f0d9` ci: pin images to explicit version tags (never :latest)
 - `26146b9` ci: pre-clone upstream through Chrome proxy; fix auto-bump build trigger
+
+## 11. 2026-09-10 migration, version audit, and runtime hardening
+
+- The GitHub repository transfer has already completed: the canonical repository
+  is now `PotemkinCo/flexisip-docker`. The old TeleCrypt-io URL redirects there.
+  Update local `origin` to `https://github.com/PotemkinCo/flexisip-docker.git`
+  before future pushes.
+- There is no `2.6.2` image/tag in the custom GHCR namespace. The old
+  `ghcr.io/telecrypt-io/flexisip-proxy:latest` resolved to the same digest as
+  `2.6.1`, while `:2.6.2` was manifest-unknown. The upstream changelog has a
+  `2.6.2 Hotfix` heading, but no upstream `2.6.2` release tag; the listed fixes
+  are unrelated to the push-timeout crash.
+- The 2.6.0/2.6.1 mismatch came from two separate drifts: the 2026-07-31
+  nightly bump committed `versions.env=2.6.1`, but a `GITHUB_TOKEN` commit did
+  not trigger the push build; then the old decision condition treated
+  `current=2.6.1, built=2.6.0` as no change. A successful build/state update
+  landed on 2026-08-10. The server's `versions.env` was then left stale even
+  though the running proxy was already 2.6.1.
+- `auto-bump.yml` now selects the highest numeric stable tag, retries GitLab,
+  falls back to official GitHub mirrors, and explicitly retries a build whenever
+  `versions.env` and `state/built.json` differ. `build.yml` now uses the
+  `PotemkinCo` GHCR namespace and smoke-tests the actual Flexisip binary version.
+- Intended push settings are explicit in `config/flexisip.conf`: immediate
+  initial push (`timeout=0`), three retries (`retransmission-count=3`), and a
+  7-second retry interval (`retransmission-interval=7`). `fork-late=true` is
+  retained. Presence remains enabled as before; no presence-related change was
+  made.
+- Core dumps are bounded by Docker's proxy `RLIMIT_CORE` at 256 MiB. Flexisip's
+  own `dump-corefiles=false` remains explicit because enabling that application
+  switch raises the limit to unlimited. The proxy entrypoint changes into the
+  persistent `/var/opt/belledonne-communications/cores` directory before
+  starting Flexisip, so future dumps are retained in the Docker volume.
+- Before replacing the proxy container, preserve the existing `/core` dump in
+  `/opt/flexisip-docker/core-dumps/`; it was approximately 39.5 MiB and is the
+  valuable crash artifact from the prior incident.
+- After deployment, verify: image tags/digests under `ghcr.io/potemkinco`,
+  process version `2.6.1`, proxy `Max core file size` = 262144 KB, the three
+  push settings above, all six containers healthy, and disk usage.

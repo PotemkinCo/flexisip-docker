@@ -81,11 +81,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/opt/belledonne-communications/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 LABEL org.opencontainers.image.title="flexisip-proxy"
-LABEL org.opencontainers.image.description="SIP proxy (unofficial community build) for TeleCrypt-io"
+LABEL org.opencontainers.image.description="SIP proxy (unofficial community build) for PotemkinCo"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
-LABEL org.opencontainers.image.source="https://github.com/TeleCrypt-io/flexisip-docker"
-LABEL org.opencontainers.image.vendor="TeleCrypt-io"
-LABEL org.opencontainers.image.documentation="https://github.com/TeleCrypt-io/flexisip-docker/blob/main/README.md"
+LABEL org.opencontainers.image.source="https://github.com/PotemkinCo/flexisip-docker"
+LABEL org.opencontainers.image.vendor="PotemkinCo"
+LABEL org.opencontainers.image.documentation="https://github.com/PotemkinCo/flexisip-docker/blob/main/README.md"
 
 # Runtime libraries the proxy binary links against. Names use the t64 ABI
 # where the upstream .deb's Depends declares them.

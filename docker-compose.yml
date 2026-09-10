@@ -102,18 +102,26 @@ services:
   # SIP Proxy
   # ---------------------------------------------------------------------------
   proxy:
-    image: ghcr.io/telecrypt-io/flexisip-proxy:2.6.1
+    image: ghcr.io/potemkinco/flexisip-proxy:2.6.1
     container_name: flexisip-proxy
     restart: unless-stopped
     network_mode: host
     # SYS_RESOURCE lets the proxy raise RLIMIT_NOFILE (harmless warning otherwise).
     cap_add:
       - SYS_RESOURCE
+    # Enable crash dumps while capping each dump at 256 MiB. The proxy
+    # entrypoint places them in the persistent proxy_data volume.
+    ulimits:
+      core:
+        soft: 268435456
+        hard: 268435456
     environment:
       - SIP_IP=${SIP_IP:-203.0.113.10}
     volumes:
       # Blackhole Belledonne public presence/RLS infra - see config/hosts
       - ./config/hosts:/etc/hosts:ro
+      # Direct Apple VoIP push credentials for the custom iOS build.
+      - /etc/flexisip/apn:/etc/flexisip/apn:ro
       - flexisip_certs:/etc/flexisip/tls:ro
       - ./config/flexisip.conf:/etc/flexisip/flexisip.conf:ro
       - ./config/users.conf:/etc/flexisip/users.conf:ro
@@ -142,7 +150,7 @@ services:
   # Conference server
   # ---------------------------------------------------------------------------
   conference:
-    image: ghcr.io/telecrypt-io/flexisip-conference:1.0.1
+    image: ghcr.io/potemkinco/flexisip-conference:1.0.1
     container_name: flexisip-conference
     restart: unless-stopped
     # Host network: the conference server listens on 127.0.0.1:6064 and the

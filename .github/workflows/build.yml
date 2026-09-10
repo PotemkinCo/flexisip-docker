@@ -11,7 +11,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_OWNER: telecrypt-io
+  IMAGE_OWNER: potemkinco
 
 permissions:
   contents: read
@@ -207,8 +207,8 @@ jobs:
             - **flexisip-conference**: `${{ steps.vars.outputs.conference }}`
 
             These are the same binaries that ship in the Docker images:
-            - `ghcr.io/telecrypt-io/flexisip-proxy:${{ steps.vars.outputs.flexisip }}`
-            - `ghcr.io/telecrypt-io/flexisip-conference:${{ steps.vars.outputs.conference }}`
+            - `ghcr.io/potemkinco/flexisip-proxy:${{ steps.vars.outputs.flexisip }}`
+            - `ghcr.io/potemkinco/flexisip-conference:${{ steps.vars.outputs.conference }}`
 
             Install on Ubuntu 24.04 (with the runtime dependencies from the .deb's `Depends:` already satisfied):
 
@@ -314,10 +314,10 @@ jobs:
             type=raw,value=${{ env.FLEXISIP_VERSION }}
           labels: |
             org.opencontainers.image.title=flexisip-proxy
-            org.opencontainers.image.description=SIP proxy (unofficial community build) for TeleCrypt-io
+            org.opencontainers.image.description=SIP proxy (unofficial community build) for PotemkinCo
             org.opencontainers.image.licenses=AGPL-3.0
-            org.opencontainers.image.source=https://github.com/TeleCrypt-io/flexisip-docker
-            org.opencontainers.image.vendor=TeleCrypt-io
+            org.opencontainers.image.source=https://github.com/PotemkinCo/flexisip-docker
+            org.opencontainers.image.vendor=PotemkinCo
 
       - name: Build & push proxy image
         uses: docker/build-push-action@v6
@@ -411,10 +411,10 @@ jobs:
             type=raw,value=${{ env.FLEXISIP_CONFERENCE_VERSION }}
           labels: |
             org.opencontainers.image.title=flexisip-conference
-            org.opencontainers.image.description=Conference server (unofficial community build) for TeleCrypt-io, with EKT plugin for E2EE
+            org.opencontainers.image.description=Conference server (unofficial community build) for PotemkinCo, with EKT plugin for E2EE
             org.opencontainers.image.licenses=AGPL-3.0
-            org.opencontainers.image.source=https://github.com/TeleCrypt-io/flexisip-docker
-            org.opencontainers.image.vendor=TeleCrypt-io
+            org.opencontainers.image.source=https://github.com/PotemkinCo/flexisip-docker
+            org.opencontainers.image.vendor=PotemkinCo
 
       - name: Build & push conference image
         uses: docker/build-push-action@v6
@@ -466,28 +466,36 @@ jobs:
           FLEXISIP_VERSION: ${{ steps.vars.outputs.flexisip }}
         run: |
           set -euo pipefail
-          docker pull "ghcr.io/telecrypt-io/flexisip-proxy:${FLEXISIP_VERSION}"
+          docker pull "ghcr.io/${IMAGE_OWNER}/flexisip-proxy:${FLEXISIP_VERSION}"
           echo "proxy image OCI labels:"
-          docker inspect "ghcr.io/telecrypt-io/flexisip-proxy:${FLEXISIP_VERSION}" \
+          docker inspect "ghcr.io/${IMAGE_OWNER}/flexisip-proxy:${FLEXISIP_VERSION}" \
             --format '{{json .Config.Labels}}' | jq .
           echo "proxy image entrypoint:"
-          docker inspect "ghcr.io/telecrypt-io/flexisip-proxy:${FLEXISIP_VERSION}" \
+          docker inspect "ghcr.io/${IMAGE_OWNER}/flexisip-proxy:${FLEXISIP_VERSION}" \
             --format '{{json .Config.Entrypoint}}'
           echo "proxy image cmd:"
-          docker inspect "ghcr.io/telecrypt-io/flexisip-proxy:${FLEXISIP_VERSION}" \
+          docker inspect "ghcr.io/${IMAGE_OWNER}/flexisip-proxy:${FLEXISIP_VERSION}" \
             --format '{{json .Config.Cmd}}'
+
+          actual=$(docker run --rm --entrypoint flexisip \
+            "ghcr.io/${IMAGE_OWNER}/flexisip-proxy:${FLEXISIP_VERSION}" --version)
+          echo "proxy version: $actual"
+          if ! grep -q "flexisip version: ${FLEXISIP_VERSION}" <<<"$actual"; then
+            echo "FAIL: image version does not match versions.env" >&2
+            exit 1
+          fi
 
       - name: Pull conference image and verify EKT plugin
         env:
           CONFERENCE_VERSION: ${{ steps.vars.outputs.conference }}
         run: |
           set -euo pipefail
-          docker pull "ghcr.io/telecrypt-io/flexisip-conference:${CONFERENCE_VERSION}"
+          docker pull "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}"
           echo "conference image OCI labels:"
-          docker inspect "ghcr.io/telecrypt-io/flexisip-conference:${CONFERENCE_VERSION}" \
+          docker inspect "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
             --format '{{json .Config.Labels}}' | jq .
           echo "conference image entrypoint:"
-          docker inspect "ghcr.io/telecrypt-io/flexisip-conference:${CONFERENCE_VERSION}" \
+          docker inspect "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
             --format '{{json .Config.Entrypoint}}'
 
           # EKT plugin must be present at the upstream's install layout.
@@ -496,13 +504,13 @@ jobs:
           PLUGIN_DIR="/opt/belledonne-communications/flexisip-conference/lib/liblinphone/plugins"
           echo "looking for EKT plugin in: $PLUGIN_DIR"
           found=$(docker run --rm \
-              "ghcr.io/telecrypt-io/flexisip-conference:${CONFERENCE_VERSION}" \
+              "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
               sh -c "ls -1 $PLUGIN_DIR 2>/dev/null | grep -E 'ektserver.*\.so$' || true")
           if [ -z "$found" ]; then
             echo "FAIL: no *ektserver*.so found in $PLUGIN_DIR" >&2
             echo "Contents of $PLUGIN_DIR:" >&2
             docker run --rm \
-                "ghcr.io/telecrypt-io/flexisip-conference:${CONFERENCE_VERSION}" \
+                "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
                 ls -la "$PLUGIN_DIR" >&2 || true
             exit 1
           fi
@@ -510,7 +518,7 @@ jobs:
 
           # Entrypoint must be executable.
           if ! docker run --rm \
-              "ghcr.io/telecrypt-io/flexisip-conference:${CONFERENCE_VERSION}" \
+              "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
               test -x /usr/local/bin/entrypoint.sh; then
             echo "FAIL: entrypoint.sh not executable" >&2
             exit 1
@@ -521,7 +529,7 @@ jobs:
           # in the Actions UI.
           echo "--- entrypoint run output ---"
           docker run --rm \
-              "ghcr.io/telecrypt-io/flexisip-conference:${CONFERENCE_VERSION}" \
+              "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
               true 2>&1 || true
 
   # -------------------------------------------------------------------------
