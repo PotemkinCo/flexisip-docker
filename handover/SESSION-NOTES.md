@@ -231,3 +231,10 @@ not be used on production hosts.
   rule was agreed. Until the maintenance window, it still runs the prior
   TeleCrypt-namespaced compose configuration and has stale `versions.env`
   metadata even though its running binaries were already 2.6.1/1.0.1.
+- Automatic APT maintenance is a separate scheduling issue: `apt-daily.timer`
+  is configured for 06:00 and 18:00 with up to 12 hours of random delay, while
+  `apt-daily-upgrade.timer` is configured for 06:00 with up to 60 minutes of
+  random delay. Neither caused the 2026-09-11 Docker outage, but these timers
+  should be constrained to the 02:00-04:00 Europe/Berlin window if that policy
+  applies to unattended package updates as well; `Persistent=true` should also
+  be reviewed so a missed run is not replayed during working hours.
