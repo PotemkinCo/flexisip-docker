@@ -1,0 +1,59 @@
+name: validate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .env.example
+      - production.env
+      - docker-compose.yml
+      - config/**
+      - docker/**
+      - scripts/**
+      - .github/workflows/**
+      - README.md
+      - AGENTS.md
+      - SECURITY.md
+  pull_request:
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: static and Compose validation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout meta-repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Run repository checks
+        run: ./scripts/check.sh
+
+      - name: Check shell and JavaScript syntax
+        run: |
+          set -euo pipefail
+          find scripts docker -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+          node --check scripts/gitlab-proxy.js
+
+      - name: Validate Compose interpolation
+        run: |
+          set -euo pipefail
+          docker compose --env-file .env.example --env-file production.env config --quiet
+
+      - name: Check workflow syntax when actionlint is available
+        run: |
+          set -euo pipefail
+          if command -v actionlint >/dev/null 2>&1; then
+            actionlint
+          else
+            echo 'actionlint is not installed on this runner; Compose and shell validation completed'
+          fi
+
+      - name: Check patch hygiene
+        run: git diff --check

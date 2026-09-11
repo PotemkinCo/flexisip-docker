@@ -8,8 +8,8 @@ Not a source code repository. Delivers:
 - **`ghcr.io/potemkinco/flexisip-proxy`** — SIP proxy (TLS port 5061)
 - **`ghcr.io/potemkinco/flexisip-conference`** — Conference server (E2EE-capable)
 
-Both images are built from upstream source and published to GHCR. Bonus `.deb`
-packages are published to GitHub Releases (not consumed by Docker).
+Both images are built from upstream source and published to GHCR. Only
+versioned image tags are published; production uses an explicit digest lock.
 
 ## ⚠️ The deployment server NEVER connects to this repository
 
@@ -68,8 +68,10 @@ re-opens the hole.
 **What to copy** onto the server:
 
 ```
-docker-compose.yml
-versions.env
+  docker-compose.yml
+  production.env
+  scripts/compose.sh
+  versions.env
 config/flexisip.conf
 config/flexisip-conference.conf
 config/domain-registrations.conf
@@ -237,20 +239,23 @@ deployment server — that is by design, not a workaround.
   perform `<SIP_IP>` substitution at runtime (this was considered and rejected:
   configs are local files the operator owns). Do not "fix" this by adding in-container
   templating — it contradicts the supported deployment model.
-- `.env` carries only environment-level values (`SIP_IP` for the ACME sidecar and
-  containers, TURN credentials, `ENABLE_EKT_SERVER`). Everything else stays in the
-  local config files.
+- `.env` carries environment-level values (`SIP_IP`, static TURN credentials,
+  and MariaDB root/application credentials). `production.env` carries only
+  promoted image versions and digests; everything else stays in local config
+  files.
 
 ## Workflow trigger rules
 
-`.github/workflows/build.yml` only fires on changes to:
+`.github/workflows/build.yml` fires on changes to:
 
 - `versions.env`
 - `docker/**`
+- `scripts/ci/**`, `scripts/gitlab-proxy.js`, and the scripts package lock
 - `.github/workflows/build.yml`
 
-**Config/docs changes (README, .env, docker-compose.yml, config/*.conf)
-silently skip CI.** This is intentional — Dockerfiles are unchanged.
+`.github/workflows/validate.yml` covers Compose, shell, JavaScript, and static
+repository checks. `.github/workflows/promote.yml` is the only workflow that
+updates `production.env`; it verifies selected images and does not deploy.
 
 `.github/workflows/auto-bump.yml` runs nightly (03:00 UTC), detects new upstream
 releases, and pushes `versions.env` updates to `main`.
@@ -260,7 +265,8 @@ releases, and pushes `versions.env` updates to `main`.
 | File | Role |
 |---|---|
 | `versions.env` | Source of truth for which upstream version gets built |
-| `state/built.json` | Source of truth for which versions have a published image |
+| `state/built.json` | Candidate versions that have produced published images |
+| `production.env` | Explicit production image versions and immutable digests |
 
 Never edit `state/built.json` manually — it is updated by CI.
 
@@ -273,8 +279,11 @@ retries). **If modifying Dockerfiles, preserve these loops.**
 ## Key commands
 
 ```bash
-# Trigger a build (after changing versions.env)
+# Trigger a candidate build
 gh workflow run build
+
+# Promote exact published tags to production (verification + digest lock)
+gh workflow run promote.yml -f flexisip_version=2.6.1 -f conference_version=1.0.1
 
 # Check latest workflow runs
 gh run list --limit 5
@@ -282,9 +291,8 @@ gh run list --limit 5
 # Watch a running build
 gh run watch <run-id>
 
-# Pull images locally
-docker pull ghcr.io/potemkinco/flexisip-proxy:latest
-docker pull ghcr.io/potemkinco/flexisip-conference:latest
+# Inspect the production lock
+cat production.env
 ```
 
 ## No PRs
@@ -293,8 +301,9 @@ Push directly to `main`. No branch protection or PR gates configured.
 
 ## Permissions
 
-The `build-debs` job needs `permissions: contents: write` override (top-level
-permissions are `contents: read`). Do not remove this.
+Build jobs have only `packages: write` when pushing images. Smoke tests have
+`packages: read`; the state and promotion jobs get `contents: write` only for
+their respective commits. Keep these scopes narrow.
 
 ## ACME / TLS automation
 
@@ -305,7 +314,7 @@ permissions are `contents: read`). Do not remove this.
 - No DNS required — IP-address certificates only.
 - No email required — Let's Encrypt account is created without email.
 - Certificate + key are written to shared `flexisip_certs` Docker volume.
-- Proxy auto-reloads certs every 60 seconds.
+- Proxy auto-reloads certs every 60 minutes (`tls-certificates-check-interval=60`).
 
 ## Config placeholders
 
@@ -313,9 +322,9 @@ All config files use `<SIP_IP>` as a placeholder. Never hardcode IPs in
 committed files. The user replaces `<SIP_IP>` with their server's public IP
 during setup.
 
-DB passwords are hardcoded to `flexisip` (internal only — MariaDB is not
-exposed to the Internet). TURN credentials must be changed from defaults
-(exposed to Internet on ports 3478/5349).
+MariaDB root/application passwords are required in the local `.env`; the
+conference config must contain the same application password. TURN credentials
+are also required and are exposed to the Internet on the TURN listener.
 
 **TURN credential generation:** When helping a deployer fill in `TURN_USER`
 and `TURN_PASSWORD`, always generate them via shell commands (e.g.
@@ -329,8 +338,6 @@ produce verified, copy-paste-safe values.
 - **Enabled by default** in `config/flexisip-conference.conf` (`[conference-server]`
   `audio-engine-mode=sfu`, `video-engine-mode=sfu`, `encryption=zrtp`). No runtime
   rewriting — the config ships ready.
-- `ENABLE_EKT_SERVER=true` in `.env` is retained only as an **intent signal**; it no
-  longer triggers any entrypoint config change.
 - EKT plugin is always installed but only active in SFU mode.
 - **Verify:** conference log line
   `EKT server plugin for core sip:conference-focus@… has been succesfully loaded`
@@ -350,9 +357,8 @@ E2EE group conferences work out of the box. Nothing is rewritten at runtime.
      video-engine-mode=sfu
      encryption=zrtp
    Leave them as-is (uncomment only if ever absent).
-2. `.env` keeps `ENABLE_EKT_SERVER=true` as an intent signal (no rewriting).
-3. Deploy: `docker compose up -d`.
-4. Verify: `docker logs flexisip-conference 2>&1 | grep -E "EKT server plugin|E2EE mode ACTIVE"`
+2. Deploy: `./scripts/compose.sh up -d`.
+3. Verify: `docker logs flexisip-conference 2>&1 | grep -E "EKT server plugin|E2EE mode ACTIVE"`
    Expect both lines. If missing, E2EE is NOT active (media unencrypted).
 To DISABLE E2EE: comment the three lines in step 1.
 
@@ -363,10 +369,11 @@ To DISABLE E2EE: comment the three lines in step 1.
 | `docker-compose.yml` | Deployment layout (proxy, conference, acme, mariadb, redis, coturn) |
 | `config/flexisip.conf` | Proxy config template |
 | `config/flexisip-conference.conf` | Conference config template |
-| `.env` | Environment variables template |
+| `.env.example` | Local environment and secret template |
+| `production.env` | Promoted image version/digest lock |
 | `docker/proxy/Dockerfile` | Proxy image build |
 | `docker/conference/Dockerfile` | Conference image build |
-| `docker/proxy/entrypoint.sh` | Proxy entrypoint (EKT_SERVER toggle) |
+| `docker/proxy/entrypoint.sh` | Proxy entrypoint and persistent core-dump directory |
 | `.github/workflows/build.yml` | CI build pipeline |
 | `.github/workflows/auto-bump.yml` | Nightly upstream version detection |
 | `versions.env` | Pinned upstream versions |
@@ -420,7 +427,7 @@ No unit tests. Verification is manual against a running deployment.
 
 - **E2EE is on by default** — `config/flexisip-conference.conf` ships
   `audio-engine-mode=sfu` + `video-engine-mode=sfu` + `encryption=zrtp`;
-  `ENABLE_EKT_SERVER=true` in `.env` is an intent signal only. With E2EE off
+  With E2EE off
   (the three lines commented), conferences still work but media is NOT
   ZRTP-encrypted and flexisip raises no error (silently absent E2EE). Verify via
   the conference log line
@@ -444,9 +451,9 @@ No unit tests. Verification is manual against a running deployment.
   `docker restart flexisip-proxy` → `404`/`482` until clients re-register.
   Restart clients or shorten `default-expires` during rollout.
 
-- **Healthchecks added (Issue 7):** compose now health-checks mariadb, redis,
-  coturn (UDP 3478), proxy (TCP 5061 + cert validity — see below), conference
-  (UDP 6064). Monitor proxy `503`s, cert expiry, conference failures, RTP-relay.
+- **Healthchecks:** compose checks MariaDB, Redis, the coturn/conference PID 1
+  processes, and proxy TCP 5061 plus certificate validity. Monitor proxy `503`s,
+  cert expiry, conference failures, and RTP relay.
 
 - **Proxy healthcheck validates the served cert (not just TCP):** the proxy
   healthcheck runs `openssl s_client ... | openssl x509 -checkend 0` on
@@ -485,13 +492,10 @@ No unit tests. Verification is manual against a running deployment.
   retried until the next cert mtime change (next ACME renewal).
 
 - **`tls-certificates-check-interval` default unit is MINUTES, not seconds:**
-  the config comment says "auto-reloads certificates every 60 seconds" but
-  the flexisip config reference documents this parameter as type
-  `DurationMIN` with default unit `minute`. So `=60` means 60 **minutes**
-  (hourly), not 60 seconds. The hourly cadence is fine in practice (ACME
-  renews every 12h), but the comment is wrong. To set 60 seconds, use
-  `tls-certificates-check-interval=60s` (with the `s` unit suffix). Do NOT
-  leave a bare number and assume seconds.
+  the flexisip config reference documents this parameter as type `DurationMIN`
+  with default unit `minute`. The deployed `=60` therefore means 60 minutes
+  (hourly). The hourly cadence is fine in practice because ACME renews every
+  12 hours. Do NOT leave a bare number and assume seconds.
 
 - **DoSProtection disabled:** The `[module::DoSProtection]` section in
   `config/flexisip.conf` sets `enabled=false` because the module
@@ -518,8 +522,7 @@ server or in the config files.
 
 ### Auto-bump triggers a build (fixed 2026-08-10)
 
-`auto-bump.yml` commits `versions.env` using `GITHUB_TOKEN` (via
-`stefanzweifel/git-auto-commit-action@v5`). **GitHub Actions does not
+`auto-bump.yml` commits `versions.env` using `GITHUB_TOKEN`. **GitHub Actions does not
 start new workflows from commits made by `GITHUB_TOKEN`** — a deliberate
 anti-loop restriction. The old step name "Commit versions.env (triggers
 build workflow)" was wrong: the commit did not fire `build.yml`.
@@ -578,9 +581,8 @@ pre-clone, keeping the WAF workaround entirely in the CI environment
 **Key constraints of this approach:**
 - The proxy is a path-rewriting proxy, not CONNECT. It cannot be used as an
   `http_proxy`/`https_proxy` env var for HTTPS URLs (git would send CONNECT).
-- Each build job that touches gitlab (build-debs, build-proxy-image,
-  build-conference-image) starts its own proxy instance and stops it in an
-  `if: always()` step.
+- Each image build job that touches gitlab starts its own proxy instance and
+  the shared `prepare-upstream.sh` cleanup trap stops it after cloning.
 - Docker builds use `network: host` so any residual network access inside
   the build shares the runner's network.
 - The GitHub Actions runner has Chrome + Node pre-installed

@@ -5,9 +5,17 @@ on:
   push:
     branches: [main]
     paths:
-      - 'versions.env'
-      - 'docker/**'
-      - '.github/workflows/build.yml'
+      - versions.env
+      - docker/**
+      - scripts/ci/**
+      - scripts/gitlab-proxy.js
+      - scripts/package.json
+      - scripts/package-lock.json
+      - .github/workflows/build.yml
+
+concurrency:
+  group: flexisip-main
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -15,568 +23,167 @@ env:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  # -------------------------------------------------------------------------
-  # Build .deb packages and publish to GitHub Releases as a bonus artifact
-  # for non-Docker users. The Docker images do NOT consume these.
-  # Only runs when versions.env has been modified.
-  # -------------------------------------------------------------------------
-  build-debs:
-    name: build .deb packages (bonus)
+  build-proxy-image:
+    name: build and push proxy image
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.head_commit.modified, 'versions.env')
+      contents: read
+      packages: write
     steps:
       - name: Checkout meta-repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Read versions.env
-        id: vars
+      - name: Read candidate version
         run: |
           set -euo pipefail
           . ./versions.env
-          {
-            echo "flexisip=${FLEXISIP_VERSION}"
-            echo "conference=${FLEXISIP_CONFERENCE_VERSION}"
-          } >> "$GITHUB_OUTPUT"
+          echo "FLEXISIP_VERSION=$FLEXISIP_VERSION" >> "$GITHUB_ENV"
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ccache cmake ninja-build git python3 python3-pystache python3-six \
-            doxygen elfutils gcc-14 g++-14 clang-20 llvm make yasm dpkg-dev \
-            libsystemd-dev libssl-dev libboost-dev libboost-system-dev \
-            libboost-thread-dev libcpp-jwt-dev libhiredis-dev libjansson-dev \
-            libjsoncpp-dev libsqlite3-dev libpq-dev libmariadb-dev \
-            libmariadb-dev-compat libnghttp2-dev libsnmp-dev libxerces-c-dev \
-            libsrtp2-dev libgsm1-dev libopus-dev libmbedtls-dev libspeex-dev \
-            libspeexdsp-dev libxml2-dev libvpx-dev
-
-      - name: Build libnghttp2_asio 1.51.0
-        run: |
-          version=1.51.0
-          srcdir=nghttp2-${version}
-          srcpkg=${srcdir}.tar.gz
-          bindir=build_libnghttp2_asio
-          wget -q "https://github.com/nghttp2/nghttp2/releases/download/v${version}/${srcpkg}"
-          tar -xf "${srcpkg}"
-          cmake -S "${srcdir}" -B "${bindir}" -GNinja -DENABLE_ASIO_LIB=ON
-          sudo cmake --build "${bindir}" --target install
-          rm -rf "${srcpkg}" "${srcdir}" "${bindir}"
-
-      - name: Start gitlab proxy (WAF workaround)
-        run: |
-          set -euo pipefail
-          cd scripts
-          npm install --no-audit --no-fund
-          export CHROME_BIN="${CHROME_BIN:-$(command -v google-chrome-stable || command -v chromium || echo /usr/bin/google-chrome-stable)}"
-          echo "using chrome: $CHROME_BIN"
-          nohup env CHROME_BIN="$CHROME_BIN" node gitlab-proxy.js > gitlab-proxy.log 2>&1 &
-          echo $! > gitlab-proxy.pid
-          for i in $(seq 1 30); do
-            if curl -fsS --max-time 5 "http://127.0.0.1:8843/explore/projects" >/dev/null 2>&1; then
-              echo "gitlab proxy ready"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "gitlab proxy failed to start"; cat gitlab-proxy.log; exit 1
-
-      - name: Configure git for gitlab proxy
-        run: |
-          git config --global url.http://127.0.0.1:8843/.insteadOf https://gitlab.linphone.org/
-
-      - name: Clone flexisip at pinned tag
-        run: |
-          . ./versions.env
-          for i in 1 2 3 4 5; do
-            rm -rf src-proxy
-            if git clone --depth 1 --branch "${FLEXISIP_VERSION}" \
-              https://gitlab.linphone.org/BC/public/flexisip.git src-proxy; then
-              break
-            fi
-            echo "git clone failed (attempt $i), retrying in 15s"
-            sleep 15
-          done
-          cd src-proxy
-          for i in 1 2 3 4 5; do
-            echo "=== Submodule fetch attempt $i ==="
-            if git submodule update --init --recursive; then
-              uninit=$(git submodule status --recursive 2>/dev/null | grep -c '^-' || true)
-              if [ "$uninit" -eq 0 ]; then
-                echo "All submodules OK"
-                break
-              fi
-            fi
-            echo "Cleaning submodule state and retrying..."
-            rm -rf .git/modules/* 2>/dev/null || true
-            git submodule foreach --recursive 'rm -rf "$(pwd)"' 2>/dev/null || true
-            sleep 30
-          done
-
-      - name: Configure ccache (proxy)
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ${{ runner.os }}-ccache-proxy-${{ steps.vars.outputs.flexisip }}
-          restore-keys: ${{ runner.os }}-ccache-proxy-
-
-      - name: Build proxy .deb
-        working-directory: src-proxy
-        run: |
-          export CC=gcc-14
-          export CXX=g++-14
-          mkdir build && cd build
-          cmake -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_INSTALL_PREFIX=/opt/belledonne-communications \
-            -DSYSCONF_INSTALL_DIR=/etc \
-            -DFLEXISIP_SYSTEMD_INSTALL_DIR=/usr/lib/systemd/system \
-            -DCPACK_GENERATOR=DEB \
-            -DENABLE_G729=ON \
-            ..
-          cmake --build . --target package
-
-      - name: Clone flexisip-conference at pinned tag
-        run: |
-          . ./versions.env
-          for i in 1 2 3 4 5; do
-            rm -rf src-conf
-            if git clone --depth 1 --branch "${FLEXISIP_CONFERENCE_VERSION}" \
-              https://gitlab.linphone.org/BC/public/flexisip-conference.git src-conf; then
-              break
-            fi
-            echo "git clone failed (attempt $i), retrying in 15s"
-            sleep 15
-          done
-          cd src-conf
-          for i in 1 2 3 4 5; do
-            echo "=== Submodule fetch attempt $i ==="
-            if git submodule update --init --recursive; then
-              uninit=$(git submodule status --recursive 2>/dev/null | grep -c '^-' || true)
-              if [ "$uninit" -eq 0 ]; then
-                echo "All submodules OK"
-                break
-              fi
-            fi
-            echo "Cleaning submodule state and retrying..."
-            rm -rf .git/modules/* 2>/dev/null || true
-            git submodule foreach --recursive 'rm -rf "$(pwd)"' 2>/dev/null || true
-            sleep 30
-          done
-
-      - name: Configure ccache (conference)
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ${{ runner.os }}-ccache-conference-${{ steps.vars.outputs.conference }}
-          restore-keys: ${{ runner.os }}-ccache-conference-
-
-      - name: Build conference .deb
-        working-directory: src-conf
-        run: |
-          export CC=gcc-14
-          export CXX=g++-14
-          mkdir build && cd build
-          cmake -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_INSTALL_PREFIX=/opt/belledonne-communications/flexisip-conference \
-            -DFLEXISIP_SYSTEMD_INSTALL_DIR=/usr/lib/systemd/system \
-            -DLOGROTATE_DIR=/etc/logrotate.d \
-            -DCPACK_GENERATOR=DEB \
-            -DENABLE_G729=ON \
-            -DENABLE_EKT_SERVER=ON \
-            ..
-          cmake --build . --target package
-
-      - name: Create GitHub Release with .deb artifacts
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: flexisip-${{ steps.vars.outputs.flexisip }}_conference-${{ steps.vars.outputs.conference }}
-          name: "flexisip ${{ steps.vars.outputs.flexisip }} + flexisip-conference ${{ steps.vars.outputs.conference }}"
-          body: |
-            Automated release of `flexisip` and `flexisip-conference` .deb packages.
-
-            - **flexisip**: `${{ steps.vars.outputs.flexisip }}`
-            - **flexisip-conference**: `${{ steps.vars.outputs.conference }}`
-
-            These are the same binaries that ship in the Docker images:
-            - `ghcr.io/potemkinco/flexisip-proxy:${{ steps.vars.outputs.flexisip }}`
-            - `ghcr.io/potemkinco/flexisip-conference:${{ steps.vars.outputs.conference }}`
-
-            Install on Ubuntu 24.04 (with the runtime dependencies from the .deb's `Depends:` already satisfied):
-
-            ```bash
-            sudo apt install -y ./bc-flexisip_${{ steps.vars.outputs.flexisip }}-*_amd64.deb
-            sudo apt install -y ./bc-flexisip-conference_${{ steps.vars.outputs.conference }}-*_amd64.deb \
-                                ./bc-flexisip-conference-plugin-ektserver_${{ steps.vars.outputs.conference }}-*_amd64.deb
-            ```
-          files: |
-            src-proxy/build/*.deb
-            src-conf/build/*.deb
-          fail_on_unmatched_files: false
-
-      - name: Stop gitlab proxy
-        if: always()
-        run: |
-          if [ -f scripts/gitlab-proxy.pid ]; then kill "$(cat scripts/gitlab-proxy.pid)" 2>/dev/null || true; fi
-          pkill -f "gitlab-proxy" 2>/dev/null || true
-          pkill -f "google-chrome.*9222" 2>/dev/null || true
-          true
-
-  # -------------------------------------------------------------------------
-  # Build & push proxy image (multi-stage Dockerfile, no .deb input)
-  # -------------------------------------------------------------------------
-  build-proxy-image:
-    name: build & push proxy image
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout meta-repo
-        uses: actions/checkout@v4
-
-      - name: Read versions.env
-        id: vars
-        run: |
-          set -euo pipefail
-          . ./versions.env
-          echo "FLEXISIP_VERSION=${FLEXISIP_VERSION}" >> "$GITHUB_ENV"
-
-      - name: Start gitlab proxy (WAF workaround)
-        run: |
-          set -euo pipefail
-          cd scripts
-          npm install --no-audit --no-fund
-          # chrome is pre-installed on the runner; find it (playwright-core needs it)
-          export CHROME_BIN="${CHROME_BIN:-$(command -v google-chrome-stable || command -v chromium || echo /usr/bin/google-chrome-stable)}"
-          echo "using chrome: $CHROME_BIN"
-          nohup env CHROME_BIN="$CHROME_BIN" node gitlab-proxy.js > gitlab-proxy.log 2>&1 &
-          echo $! > gitlab-proxy.pid
-          # wait for the proxy to come up
-          for i in $(seq 1 30); do
-            if curl -fsS --max-time 5 "http://127.0.0.1:8843/explore/projects" >/dev/null 2>&1; then
-              echo "gitlab proxy ready"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "gitlab proxy failed to start"; cat gitlab-proxy.log; exit 1
-
-      - name: Pre-clone flexisip + submodules through proxy
-        run: |
-          set -euo pipefail
-          git config --global url.http://127.0.0.1:8843/.insteadOf https://gitlab.linphone.org/
-          rm -rf src-proxy
-          git clone --depth 1 --branch "${FLEXISIP_VERSION}" \
-            https://gitlab.linphone.org/BC/public/flexisip.git src-proxy
-          cd src-proxy
-          # --filter=blob:none: full commit history + tags (so cmake's
-          # `git describe` / bc_compute_full_version works on sofia-sip and
-          # linphone-sdk) but blob contents are deferred, keeping the packfile
-          # small enough for the Chrome proxy (full clones 502). Then
-          # `git reset --hard HEAD` in each submodule lazily fetches and
-          # materializes all blobs so the working tree is complete for COPY.
-          git submodule update --init --recursive --filter=blob:none
-          git submodule foreach --recursive 'git reset --hard HEAD'
-          echo "submodules:"
-          git submodule status --recursive
-
-      - name: Stop gitlab proxy
-        if: always()
-        run: |
-          if [ -f scripts/gitlab-proxy.pid ]; then kill "$(cat scripts/gitlab-proxy.pid)" 2>/dev/null || true; fi
-          pkill -f "gitlab-proxy" 2>/dev/null || true
-          pkill -f "google-chrome.*9222" 2>/dev/null || true
-          true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Prepare upstream source
+        run: ./scripts/ci/prepare-upstream.sh flexisip "$FLEXISIP_VERSION" src-proxy
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GITHUB_TOKEN" | docker login "$REGISTRY" \
+            --username "$GITHUB_ACTOR" --password-stdin
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/flexisip-proxy
-          tags: |
-            type=raw,value=latest
-            type=raw,value=${{ env.FLEXISIP_VERSION }}
-          labels: |
-            org.opencontainers.image.title=flexisip-proxy
-            org.opencontainers.image.description=SIP proxy (unofficial community build) for PotemkinCo
-            org.opencontainers.image.licenses=AGPL-3.0
-            org.opencontainers.image.source=https://github.com/PotemkinCo/flexisip-docker
-            org.opencontainers.image.vendor=PotemkinCo
+      - name: Build and push versioned image
+        run: |
+          set -euo pipefail
+          docker buildx create --name flexisip-builder --use
+          docker buildx build \
+            --file docker/proxy/Dockerfile \
+            --network host \
+            --tag "$REGISTRY/$IMAGE_OWNER/flexisip-proxy:$FLEXISIP_VERSION" \
+            --label org.opencontainers.image.title=flexisip-proxy \
+            --label org.opencontainers.image.description="SIP proxy (unofficial community build) for PotemkinCo" \
+            --label org.opencontainers.image.licenses=AGPL-3.0 \
+            --label org.opencontainers.image.source=https://github.com/PotemkinCo/flexisip-docker \
+            --label org.opencontainers.image.vendor=PotemkinCo \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --push .
 
-      - name: Build & push proxy image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/proxy/Dockerfile
-          # src-proxy/ is pre-cloned above and copied into the build by the Dockerfile.
-          network: host
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # -------------------------------------------------------------------------
-  # Build & push conference image (multi-stage Dockerfile, no .deb input)
-  # -------------------------------------------------------------------------
   build-conference-image:
-    name: build & push conference image
+    name: build and push conference image
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout meta-repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Read versions.env
-        id: vars
+      - name: Read candidate version
         run: |
           set -euo pipefail
           . ./versions.env
-          echo "FLEXISIP_CONFERENCE_VERSION=${FLEXISIP_CONFERENCE_VERSION}" >> "$GITHUB_ENV"
+          echo "FLEXISIP_CONFERENCE_VERSION=$FLEXISIP_CONFERENCE_VERSION" >> "$GITHUB_ENV"
 
-      - name: Start gitlab proxy (WAF workaround)
-        run: |
-          set -euo pipefail
-          cd scripts
-          npm install --no-audit --no-fund
-          export CHROME_BIN="${CHROME_BIN:-$(command -v google-chrome-stable || command -v chromium || echo /usr/bin/google-chrome-stable)}"
-          echo "using chrome: $CHROME_BIN"
-          nohup env CHROME_BIN="$CHROME_BIN" node gitlab-proxy.js > gitlab-proxy.log 2>&1 &
-          echo $! > gitlab-proxy.pid
-          for i in $(seq 1 30); do
-            if curl -fsS --max-time 5 "http://127.0.0.1:8843/explore/projects" >/dev/null 2>&1; then
-              echo "gitlab proxy ready"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "gitlab proxy failed to start"; cat gitlab-proxy.log; exit 1
-
-      - name: Pre-clone flexisip-conference + submodules through proxy
-        run: |
-          set -euo pipefail
-          git config --global url.http://127.0.0.1:8843/.insteadOf https://gitlab.linphone.org/
-          rm -rf src-conf
-          git clone --depth 1 --branch "${FLEXISIP_CONFERENCE_VERSION}" \
-            https://gitlab.linphone.org/BC/public/flexisip-conference.git src-conf
-          cd src-conf
-          # --filter=blob:none keeps the packfile small enough for the Chrome
-          # proxy (full clones 502) while retaining tags for git-describe
-          # version detection; git reset --hard HEAD materializes all blobs.
-          git submodule update --init --recursive --filter=blob:none
-          git submodule foreach --recursive 'git reset --hard HEAD'
-          echo "submodules:"
-          git submodule status --recursive
-
-      - name: Stop gitlab proxy
-        if: always()
-        run: |
-          if [ -f scripts/gitlab-proxy.pid ]; then kill "$(cat scripts/gitlab-proxy.pid)" 2>/dev/null || true; fi
-          pkill -f "gitlab-proxy" 2>/dev/null || true
-          pkill -f "google-chrome.*9222" 2>/dev/null || true
-          true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Prepare upstream source
+        run: ./scripts/ci/prepare-upstream.sh flexisip-conference "$FLEXISIP_CONFERENCE_VERSION" src-conf
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GITHUB_TOKEN" | docker login "$REGISTRY" \
+            --username "$GITHUB_ACTOR" --password-stdin
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/flexisip-conference
-          tags: |
-            type=raw,value=latest
-            type=raw,value=${{ env.FLEXISIP_CONFERENCE_VERSION }}
-          labels: |
-            org.opencontainers.image.title=flexisip-conference
-            org.opencontainers.image.description=Conference server (unofficial community build) for PotemkinCo, with EKT plugin for E2EE
-            org.opencontainers.image.licenses=AGPL-3.0
-            org.opencontainers.image.source=https://github.com/PotemkinCo/flexisip-docker
-            org.opencontainers.image.vendor=PotemkinCo
+      - name: Build and push versioned image
+        run: |
+          set -euo pipefail
+          docker buildx create --name flexisip-builder --use
+          docker buildx build \
+            --file docker/conference/Dockerfile \
+            --network host \
+            --tag "$REGISTRY/$IMAGE_OWNER/flexisip-conference:$FLEXISIP_CONFERENCE_VERSION" \
+            --label org.opencontainers.image.title=flexisip-conference \
+            --label org.opencontainers.image.description="Conference server (unofficial community build) for PotemkinCo, with EKT plugin for E2EE" \
+            --label org.opencontainers.image.licenses=AGPL-3.0 \
+            --label org.opencontainers.image.source=https://github.com/PotemkinCo/flexisip-docker \
+            --label org.opencontainers.image.vendor=PotemkinCo \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --push .
 
-      - name: Build & push conference image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/conference/Dockerfile
-          # src-conf/ is pre-cloned above and copied into the build by the Dockerfile.
-          network: host
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # -------------------------------------------------------------------------
-  # Smoke test the just-built images
-  # -------------------------------------------------------------------------
   smoke-test:
     name: smoke test images
     runs-on: ubuntu-24.04
     needs: [build-proxy-image, build-conference-image]
-    if: success()
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout meta-repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Read versions
-        id: vars
+      - name: Read candidate versions
         run: |
           set -euo pipefail
           . ./versions.env
           {
-            echo "flexisip=${FLEXISIP_VERSION}"
-            echo "conference=${FLEXISIP_CONFERENCE_VERSION}"
-          } >> "$GITHUB_OUTPUT"
+            echo "FLEXISIP_VERSION=$FLEXISIP_VERSION"
+            echo "FLEXISIP_CONFERENCE_VERSION=$FLEXISIP_CONFERENCE_VERSION"
+          } >> "$GITHUB_ENV"
 
-      - name: Pull proxy image
+      - name: Log in to GHCR
         env:
-          FLEXISIP_VERSION: ${{ steps.vars.outputs.flexisip }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          docker pull "ghcr.io/${IMAGE_OWNER}/flexisip-proxy:${FLEXISIP_VERSION}"
-          echo "proxy image OCI labels:"
-          docker inspect "ghcr.io/${IMAGE_OWNER}/flexisip-proxy:${FLEXISIP_VERSION}" \
-            --format '{{json .Config.Labels}}' | jq .
-          echo "proxy image entrypoint:"
-          docker inspect "ghcr.io/${IMAGE_OWNER}/flexisip-proxy:${FLEXISIP_VERSION}" \
-            --format '{{json .Config.Entrypoint}}'
-          echo "proxy image cmd:"
-          docker inspect "ghcr.io/${IMAGE_OWNER}/flexisip-proxy:${FLEXISIP_VERSION}" \
-            --format '{{json .Config.Cmd}}'
+          printf '%s' "$GITHUB_TOKEN" | docker login "$REGISTRY" \
+            --username "$GITHUB_ACTOR" --password-stdin
 
-          actual=$(docker run --rm --entrypoint flexisip \
-            "ghcr.io/${IMAGE_OWNER}/flexisip-proxy:${FLEXISIP_VERSION}" --version)
-          echo "proxy version: $actual"
-          if ! grep -Eq "flexisip[[:space:]]+version: ${FLEXISIP_VERSION}([[:space:]]|$)" <<<"$actual"; then
-            echo "FAIL: image version does not match versions.env" >&2
-            exit 1
-          fi
+      - name: Verify images
+        run: ./scripts/ci/verify-images.sh
 
-      - name: Pull conference image and verify EKT plugin
-        env:
-          CONFERENCE_VERSION: ${{ steps.vars.outputs.conference }}
-        run: |
-          set -euo pipefail
-          docker pull "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}"
-          echo "conference image OCI labels:"
-          docker inspect "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
-            --format '{{json .Config.Labels}}' | jq .
-          echo "conference image entrypoint:"
-          docker inspect "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
-            --format '{{json .Config.Entrypoint}}'
-
-          # EKT plugin must be present at the upstream's install layout.
-          # The target OUTPUT_NAME is "linphone_ektserver", so CMake installs
-          # it as "liblinphone_ektserver.so" (with the standard "lib" prefix).
-          PLUGIN_DIR="/opt/belledonne-communications/flexisip-conference/lib/liblinphone/plugins"
-          echo "looking for EKT plugin in: $PLUGIN_DIR"
-          found=$(docker run --rm \
-              "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
-              sh -c "ls -1 $PLUGIN_DIR 2>/dev/null | grep -E 'ektserver.*\.so$' || true")
-          if [ -z "$found" ]; then
-            echo "FAIL: no *ektserver*.so found in $PLUGIN_DIR" >&2
-            echo "Contents of $PLUGIN_DIR:" >&2
-            docker run --rm \
-                "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
-                ls -la "$PLUGIN_DIR" >&2 || true
-            exit 1
-          fi
-          echo "OK: EKT plugin present: $found"
-
-          # Entrypoint must be executable.
-          if ! docker run --rm \
-              "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
-              test -x /usr/local/bin/entrypoint.sh; then
-            echo "FAIL: entrypoint.sh not executable" >&2
-            exit 1
-          fi
-          echo "OK: entrypoint.sh is executable"
-
-          # Smoke-run the entrypoint (no config mounted) so we can see the log
-          # in the Actions UI.
-          echo "--- entrypoint run output ---"
-          docker run --rm \
-              "ghcr.io/${IMAGE_OWNER}/flexisip-conference:${CONFERENCE_VERSION}" \
-              true 2>&1 || true
-
-  # -------------------------------------------------------------------------
-  # Publish state/built.json on full success.
-  # -------------------------------------------------------------------------
   publish-state:
-    name: publish state/built.json
+    name: publish built candidate state
     runs-on: ubuntu-24.04
     needs: [build-proxy-image, build-conference-image, smoke-test]
-    if: success()
     permissions:
       contents: write
     steps:
       - name: Checkout meta-repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read versions.env
-        id: vars
+      - name: Read candidate versions
         run: |
           set -euo pipefail
           . ./versions.env
           {
-            echo "flexisip=${FLEXISIP_VERSION}"
-            echo "conference=${FLEXISIP_CONFERENCE_VERSION}"
-          } >> "$GITHUB_OUTPUT"
+            echo "FLEXISIP_VERSION=$FLEXISIP_VERSION"
+            echo "FLEXISIP_CONFERENCE_VERSION=$FLEXISIP_CONFERENCE_VERSION"
+          } >> "$GITHUB_ENV"
 
-      - name: Update state/built.json
+      - name: Update built state
         run: |
           set -euo pipefail
-          flexisip="${{ steps.vars.outputs.flexisip }}"
-          conference="${{ steps.vars.outputs.conference }}"
-
-          # Merge into existing state: keep keys that are not updated this run,
-          # overwrite keys we just built.
-          current="$(cat state/built.json 2>/dev/null || echo '{}')"
-          echo "$current" | jq --arg f "$flexisip" --arg c "$conference" \
-            '.flexisip = $f | ."flexisip-conference" = $c' \
-            > state/built.json.new
+          jq --arg flexisip "$FLEXISIP_VERSION" \
+             --arg conference "$FLEXISIP_CONFERENCE_VERSION" \
+             '.flexisip = $flexisip | ."flexisip-conference" = $conference' \
+             state/built.json > state/built.json.new
           mv state/built.json.new state/built.json
 
-          echo "New state/built.json:"
-          cat state/built.json
-
-      - name: Commit state/built.json
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "state: record built versions (${{ steps.vars.outputs.flexisip }} / ${{ steps.vars.outputs.conference }})"
-          file_pattern: state/built.json
+      - name: Commit built state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- state/built.json; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add state/built.json
+          git commit -m "state: record built versions ($FLEXISIP_VERSION / $FLEXISIP_CONFERENCE_VERSION)"
+          git push origin HEAD:main

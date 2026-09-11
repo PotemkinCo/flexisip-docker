@@ -38,8 +38,9 @@ video-engine-mode=sfu
 encryption=zrtp
 ```
 
-The `flexisip-conference` image's entrypoint appends this block automatically
-when the container is started with `ENABLE_EKT_SERVER=true`.
+The `flexisip-conference` image's entrypoint does not rewrite configuration.
+The mounted `config/flexisip-conference.conf` is authoritative, and the EKT
+plugin is verified at image-build time and reported at startup.
 
 ## The EKT plugin
 
@@ -137,10 +138,10 @@ Two concrete metadata exposures ship with this stack by default:
 ### 1. Signaling logs at rest
 
 Both configs default to `log-level=message`, which records REGISTER/INVITE
-traffic — accounts, call pairs, timing, contact IPs — retained via Docker
-json-file rotation (`max-size` × `max-file` per container, potentially
-gigabytes). A disk image, host compromise, or lawful request yields call
-records.
+traffic — accounts, call pairs, timing, contact IPs — retained by the host's
+systemd journal. Production journald is capped at 200 MiB with one-day
+retention; a disk image, host compromise, or lawful request still yields call
+records within that window.
 
 **Decide and document a retention posture.** For production, consider
 `log-level=warning`. Note the trade-off honestly: several diagnostics in the

@@ -14,21 +14,20 @@ build for self-hosting.
 
 ## Contract: upstream version = Docker image tag
 
-For every stable release of `flexisip` and `flexisip-conference`, this
-repository automatically builds a Docker image whose tag equals the upstream
-version, and pushes it to GHCR. A nightly workflow (`.github/workflows/auto-bump.yml`)
-monitors both upstream repositories and triggers the build on new releases.
+For every stable release of `flexisip` and `flexisip-conference`, a nightly
+workflow (`.github/workflows/auto-bump.yml`) updates candidate versions and
+builds images whose tags equal the upstream versions. Production is changed
+only by the manual promotion workflow, which records exact GHCR digests in
+`production.env`.
 
 | Upstream | Image | Tag examples |
 |---|---|---|
 | `flexisip` | `ghcr.io/potemkinco/flexisip-proxy` | `2.6.1` |
 | `flexisip-conference` | `ghcr.io/potemkinco/flexisip-conference` | `1.0.1` |
 
-**Strict version fixation:** deployments MUST pin explicit version tags
-(e.g. `2.6.1`), never `:latest`. `:latest` is only a convenience alias for
-CI and is intentionally NOT used in `docker-compose.yml` or on production
-hosts, so a rebuild/republish of `:latest` can never silently change what a
-deployment runs. The versioned tag is the primary deliverable.
+**Strict version fixation:** deployments use an explicit version tag plus an
+immutable registry digest. `production.env` is the production lock; the
+Compose wrapper loads it together with the local `.env`.
 
 ## What's in the box
 
@@ -40,8 +39,8 @@ Two Docker images:
   audio/video conferences. Includes the EKT plugin (`linphone_ektserver.so`)
   so that conferences can be end-to-end encrypted when configured.
 
-Both images are based on `ubuntu:24.04` and install the Belledonne `.deb`
-packages built from upstream source by this repository's CI.
+Both images are based on `ubuntu:24.04` and build the required Belledonne
+software directly from the selected upstream source in CI.
 
 ## Automatic TLS via Let's Encrypt IP certificates
 
@@ -86,7 +85,8 @@ These three lines switch the conference to **SFU mode** (server only forwards
 RTP packets and rewrites headers, no decode/encode), which is what makes E2EE
 possible. The EKT plugin (always installed) distributes encryption keys. **The
 conference entrypoint does NOT rewrite this file** — what you see is what runs.
-`ENABLE_EKT_SERVER=true` in `.env` is retained only as an intent signal.
+No separate runtime flag is needed; E2EE is controlled by the conference
+configuration shown above.
 
 To DISABLE E2EE, comment out the three lines above (media then travels
 unencrypted and flexisip raises no error — verify after changing).
@@ -103,9 +103,10 @@ verification steps.
 
 This project ships **ready-to-use configuration files** under `config/`. They are
 **local files** — mounted from the host into the containers — and are *meant* to be
-edited on your server. The repository provides sensible, E2EE-capable defaults; the
-only mandatory local change is substituting your public IP for the `<SIP_IP>`
-placeholder (and setting real credentials in `config/users.conf`).
+edited on your server. The repository provides sensible, E2EE-capable defaults;
+the local deployment must substitute `<SIP_IP>`, set SIP credentials in
+`config/users.conf`, set the `.env` secrets, and copy the MariaDB application
+password into the conference config.
 
 **IP and domain management stays local by design.** The images do **not** inject or
 rewrite config values at runtime (no in-container `<SIP_IP>` substitution was adopted —
@@ -114,8 +115,9 @@ reproducible and puts your addressing under your own control. Treat
 `config/flexisip.conf`, `config/flexisip-conference.conf`, and `config/users.conf` as
 files you own.
 
-Environment-only settings live in `.env`: `SIP_IP` (used by the ACME sidecar and the
-containers), TURN credentials, and `ENABLE_EKT_SERVER`.
+Environment-only settings live in the local `.env`: `SIP_IP`, static TURN
+credentials, and MariaDB root/application credentials. Keep it mode 600. The
+tracked `production.env` contains only image versions and digests.
 
 ## Quick start
 
@@ -132,8 +134,10 @@ containers), TURN credentials, and `ENABLE_EKT_SERVER`.
 curl -fsSL https://github.com/PotemkinCo/flexisip-docker/archive/refs/heads/main.tar.gz \
   | tar xz --strip-components=1 \
       flexisip-docker-main/docker-compose.yml \
+      flexisip-docker-main/production.env \
       flexisip-docker-main/versions.env \
       flexisip-docker-main/config \
+      flexisip-docker-main/scripts/compose.sh \
       flexisip-docker-main/.env.example
 #    Updates later = fetch the new file, diff against what is running, copy
 #    it across deliberately. There is no `git pull` in this model.
@@ -143,6 +147,7 @@ curl -fsSL https://github.com/PotemkinCo/flexisip-docker/archive/refs/heads/main
 cp .env.example .env
 cp config/users.conf.example config/users.conf
 chmod 600 .env config/users.conf
+chmod +x scripts/compose.sh
 
 # 3. Edit the local config files
 # These are local files you own — mounted from the host into the containers.
@@ -158,29 +163,24 @@ chmod 600 .env config/users.conf
 # Supported algorithms: clrtxt, md5, sha256. The " ;" terminator is mandatory.
 # Example:  version:1\n  test@203.0.113.10 clrtxt:test1234 ;
 
+# Also replace <MARIADB_APP_PASSWORD> in config/flexisip-conference.conf with
+# the exact MARIADB_PASSWORD value from .env.
+
 # 4. Edit .env (created from .env.example in step 2)
-# Set SIP_IP, TURN credentials
+# Set SIP_IP, TURN credentials, and both MariaDB passwords.
 
 # 5. Pull and start (port 80 must be reachable for ACME challenge)
-docker compose pull
-docker compose up -d
-docker compose logs -f acme proxy conference
+./scripts/compose.sh pull
+./scripts/compose.sh up -d
+./scripts/compose.sh logs -f acme proxy conference
 ```
 
 The ACME sidecar will automatically obtain a TLS certificate on first start.
 The proxy will begin serving SIP over TLS once the certificate is available
 (usually within 30-60 seconds).
 
-E2EE is already enabled in `config/flexisip-conference.conf`. `ENABLE_EKT_SERVER=true`
-in `.env` is kept as an intent signal (it no longer triggers any runtime change):
-
-```bash
-# In .env (intent signal only — E2EE ships in the conference config):
-ENABLE_EKT_SERVER=true
-
-# Then:
-docker compose up -d
-```
+E2EE is already enabled in `config/flexisip-conference.conf`; no separate
+runtime flag is needed.
 
 ## Important configuration notes
 
@@ -207,10 +207,9 @@ docker compose up -d
 
 - **E2EE is on by default** — `config/flexisip-conference.conf` ships
   `audio-engine-mode=sfu` + `video-engine-mode=sfu` + `encryption=zrtp`;
-  `ENABLE_EKT_SERVER=true` in `.env` is an intent signal only. To turn E2EE off,
-  comment those three lines in the conference config (not via `.env`). With E2EE
-  off, conferences still work but media is **not** ZRTP-encrypted — and flexisip
-  raises **no error**, so E2EE is silently absent. Verify it is active by grepping
+  To turn E2EE off, comment those three lines in the conference config. With
+  E2EE off, conferences still work but media is **not** ZRTP-encrypted — and
+  flexisip raises **no error**, so E2EE is silently absent. Verify it is active by grepping
   the conference log for:
   `EKT server plugin for core sip:conference-focus@… has been succesfully loaded`.
 
@@ -272,34 +271,34 @@ docker compose up -d
 ## How the build works
 
 `.github/workflows/build.yml` runs on push to `main` and on manual trigger.
-It has five jobs:
+It has four jobs:
 
-1. **`build-debs`** (bonus) — clones both `flexisip` and `flexisip-conference` at
-   the tags in `versions.env`, builds `.deb` packages with `CPACK_GENERATOR=DEB`,
-   and publishes them to a GitHub Release.  Runs only when `versions.env` has
-   been modified.
-2. **`build-proxy-image`** — multi-stage Docker build (`docker/proxy/Dockerfile`).
+1. **`build-proxy-image`** — multi-stage Docker build (`docker/proxy/Dockerfile`).
    The CI runner pre-clones `flexisip` + submodules through a headless-Chrome
    proxy (see `scripts/gitlab-proxy.js`), then the Dockerfile `COPY`s the
    source in and builds the proxy and its dependencies (linphone-sdk, mbedtls,
    soci, etc.), producing a minimal runtime image pushed to GHCR with a
    `:<version>` tag.
-3. **`build-conference-image`** — same for `flexisip-conference`, with
+2. **`build-conference-image`** — same for `flexisip-conference`, with
    `-DENABLE_EKT_SERVER=ON` so the EKT plugin is included in the image.
-4. **`smoke-test`** — pulls both freshly-built images, inspects their OCI
-   labels and entrypoints, and verifies the EKT plugin is present in the
-   conference image.
-5. **`publish-state`** — on full success, records the built versions in
+3. **`smoke-test`** — pulls both freshly-built images and verifies the proxy
+   version, conference entrypoint, and EKT plugin.
+4. **`publish-state`** — on full success, records the built versions in
    `state/built.json`.
+
+The build publishes only versioned tags; there is no mutable `latest` tag and
+no package-release job. `.github/workflows/promote.yml` verifies selected
+versioned images, resolves their registry digests, and commits the production
+lock. It does not deploy to the server.
 
 `.github/workflows/auto-bump.yml` runs nightly. It queries the GitLab API
 for the latest stable tag of each upstream, falls back to the official GitHub
 mirrors when GitLab is temporarily unavailable, and retries a build when a
 version bump was committed but the previous build did not complete.
 
-`versions.env` is the source of truth for which upstream version is built.
-`state/built.json` is the source of truth for which versions have produced
-a published image.
+`versions.env` is the source of truth for which upstream candidate is built.
+`state/built.json` records which candidates have produced published images.
+`production.env` is the explicit production version/digest lock.
 
 ## Source
 

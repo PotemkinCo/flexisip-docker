@@ -3,7 +3,7 @@
 #
 # Adjust:
 #   - SIP_IP: public IP address of this host (used for TLS + ACME)
-#   - TURN_PUBLIC_IP, TURN_USER, TURN_PASSWORD: coturn credentials
+#   - TURN_PUBLIC_IP, TURN_REALM, TURN_USER, TURN_PASSWORD: coturn credentials
 #
 # Port requirements:
 #   - Port 80/tcp must be reachable from the Internet on SIP_IP
@@ -13,9 +13,9 @@
 #   - Ports 3478, 5349, 49152-49200 for TURN/STUN relay
 #
 # First run:
-#   Edit .env (already in repo) — set SIP_IP, TURN credentials
-#   docker compose up -d
-#   docker compose logs -f acme proxy conference
+#   cp .env.example .env && chmod 600 .env
+#   Edit .env, then use ./scripts/compose.sh up -d
+#   ./scripts/compose.sh logs -f acme proxy conference
 
 services:
   # ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ services:
   # SIP Proxy
   # ---------------------------------------------------------------------------
   proxy:
-    image: ghcr.io/potemkinco/flexisip-proxy:2.6.1
+    image: ghcr.io/potemkinco/flexisip-proxy:${FLEXISIP_VERSION:?FLEXISIP_VERSION is required}@${FLEXISIP_PROXY_DIGEST:?FLEXISIP_PROXY_DIGEST is required}
     container_name: flexisip-proxy
     restart: unless-stopped
     network_mode: host
@@ -116,7 +116,7 @@ services:
         soft: 268435456
         hard: 268435456
     environment:
-      - SIP_IP=${SIP_IP:-203.0.113.10}
+      - SIP_IP=${SIP_IP:?SIP_IP is required}
     volumes:
       # Blackhole Belledonne public presence/RLS infra - see config/hosts
       - ./config/hosts:/etc/hosts:ro
@@ -150,7 +150,7 @@ services:
   # Conference server
   # ---------------------------------------------------------------------------
   conference:
-    image: ghcr.io/potemkinco/flexisip-conference:1.0.1
+    image: ghcr.io/potemkinco/flexisip-conference:${FLEXISIP_CONFERENCE_VERSION:?FLEXISIP_CONFERENCE_VERSION is required}@${FLEXISIP_CONFERENCE_DIGEST:?FLEXISIP_CONFERENCE_DIGEST is required}
     container_name: flexisip-conference
     restart: unless-stopped
     # Host network: the conference server listens on 127.0.0.1:6064 and the
@@ -161,11 +161,6 @@ services:
     # SYS_RESOURCE lets the conference server raise RLIMIT_NOFILE (harmless warning otherwise).
     cap_add:
       - SYS_RESOURCE
-    environment:
-      # Set to "true" to enable true end-to-end encrypted conferences.
-      # Requires the EKT plugin (already installed in the image) and configures
-      # the conference server in SFU mode with ZRTP media encryption.
-      - ENABLE_EKT_SERVER=${ENABLE_EKT_SERVER:-false}
     volumes:
       # Blackhole Belledonne public presence/RLS infra - see config/hosts
       - ./config/hosts:/etc/hosts:ro
@@ -177,8 +172,9 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      # UDP check on the conference server's loopback control/transport port.
-      test: ["CMD-SHELL", "timeout 2 bash -c 'cat < /dev/null > /dev/udp/127.0.0.1/6064'"]
+      # Check the container's PID 1 rather than sending a UDP packet. A
+      # send-only UDP probe can report success while the service is unhealthy.
+      test: ["CMD-SHELL", "test -r /proc/1/cmdline && tr -d '\\000' </proc/1/cmdline | grep -q flexisip-conference"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -196,10 +192,10 @@ services:
     ports:
       - "127.0.0.1:3306:3306"
     environment:
-      - MARIADB_ROOT_PASSWORD=flexisip
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD:?MARIADB_ROOT_PASSWORD is required}
       - MARIADB_DATABASE=flexisip_conference
       - MARIADB_USER=flexisip_conference
-      - MARIADB_PASSWORD=flexisip
+      - MARIADB_PASSWORD=${MARIADB_PASSWORD:?MARIADB_PASSWORD is required}
     volumes:
       - mariadb_data:/var/lib/mysql
     healthcheck:
@@ -240,22 +236,21 @@ services:
     command: >
       -n
       --log-file=stdout
-      --realm=${TURN_REALM:-sip.example.com}
+      --realm=${TURN_REALM:?TURN_REALM is required}
       --listening-port=3478
       --relay-ip=0.0.0.0
-      --external-ip=${TURN_PUBLIC_IP}
+      --external-ip=${TURN_PUBLIC_IP:?TURN_PUBLIC_IP is required}
       --min-port=49152
       --max-port=49200
       --fingerprint
       --lt-cred-mech
-      --user=${TURN_USER:-turnuser}:${TURN_PASSWORD:-turnpw-CHANGEME}
+      --user=${TURN_USER:?TURN_USER is required}:${TURN_PASSWORD:?TURN_PASSWORD is required}
       --no-tls
       --no-dtls
     healthcheck:
-      # UDP probe on the STUN/TURN listener. The coturn/coturn:4.6 image
-      # does not ship nc/curl/wget, so use bash's /dev/udp built-in.
-      # (CMD-SHELL uses /bin/sh which lacks /dev/udp; use bash explicitly.)
-      test: ["CMD", "bash", "-c", "echo > /dev/udp/127.0.0.1/3478"]
+      # Check coturn's PID 1 rather than sending a UDP packet. A send-only
+      # probe does not verify that the TURN process is alive.
+      test: ["CMD-SHELL", "test -r /proc/1/cmdline && tr -d '\\000' </proc/1/cmdline | grep -Eq 'turnserver|coturn'"]
       interval: 30s
       timeout: 5s
       retries: 5

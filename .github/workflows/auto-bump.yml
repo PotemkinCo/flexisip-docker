@@ -3,133 +3,72 @@ name: auto-bump
 on:
   workflow_dispatch:
   schedule:
-    # Every night at 03:00 UTC.
+    # Candidate discovery runs overnight; it never changes production.env.
     - cron: '0 3 * * *'
+
+concurrency:
+  group: flexisip-main
+  cancel-in-progress: false
 
 permissions:
   contents: write
-  # Needed to fire build.yml via `gh workflow run` after a version bump.
   actions: write
 
 jobs:
   detect-and-update:
-    name: detect new upstream versions and update versions.env
+    name: detect upstream candidates
     runs-on: ubuntu-24.04
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout meta-repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read current versions and state
+      - name: Read current versions
         id: current
         run: |
           set -euo pipefail
           . ./versions.env
           {
-            echo "flexisip=${FLEXISIP_VERSION}"
-            echo "conference=${FLEXISIP_CONFERENCE_VERSION}"
+            echo "flexisip=$FLEXISIP_VERSION"
+            echo "conference=$FLEXISIP_CONFERENCE_VERSION"
           } >> "$GITHUB_OUTPUT"
-          echo "Current versions.env: flexisip=${FLEXISIP_VERSION} conference=${FLEXISIP_CONFERENCE_VERSION}"
-          echo "Current state/built.json:"
-          cat state/built.json || true
-          echo
 
-      - name: Query GitLab for latest stable flexisip tag
+      - name: Find latest stable Flexisip tag
         id: latest-flexisip
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          response=""
-          source=""
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if candidate=$(curl -fsSL --connect-timeout 15 --max-time 45 \
-                "https://gitlab.linphone.org/api/v4/projects/BC%2Fpublic%2Fflexisip/repository/tags?per_page=100") \
-                && jq -e 'type == "array"' >/dev/null <<<"$candidate"; then
-              response="$candidate"
-              source="GitLab"
-              break
-            fi
-            echo "GitLab API call failed (attempt $attempt); retrying in 5s"
-            sleep 5
-          done
-          if [[ -z "${response:-}" ]]; then
-            echo "GitLab API unavailable; falling back to the official GitHub mirror"
-            response=$(curl -fsSL --connect-timeout 15 --max-time 45 \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/BelledonneCommunications/flexisip/tags?per_page=100")
-            source="GitHub mirror"
-          fi
-          latest=$(jq -r '[.[] | .name? | select(type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // empty' <<<"$response")
-          if [[ -z "$latest" ]]; then
-            echo "ERROR: no stable flexisip tag found" >&2
-            exit 1
-          fi
-          echo "Latest stable flexisip tag ($source): $latest"
-          echo "tag=$latest" >> "$GITHUB_OUTPUT"
+          echo "tag=$(./scripts/ci/latest-stable-tag.sh BC/public/flexisip BelledonneCommunications/flexisip)" >> "$GITHUB_OUTPUT"
 
-      - name: Query GitLab for latest stable flexisip-conference tag
+      - name: Find latest stable conference tag
         id: latest-conference
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          response=""
-          source=""
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if candidate=$(curl -fsSL --connect-timeout 15 --max-time 45 \
-                "https://gitlab.linphone.org/api/v4/projects/BC%2Fpublic%2Fflexisip-conference/repository/tags?per_page=100") \
-                && jq -e 'type == "array"' >/dev/null <<<"$candidate"; then
-              response="$candidate"
-              source="GitLab"
-              break
-            fi
-            echo "GitLab API call failed (attempt $attempt); retrying in 5s"
-            sleep 5
-          done
-          if [[ -z "${response:-}" ]]; then
-            echo "GitLab API unavailable; falling back to the official GitHub mirror"
-            response=$(curl -fsSL --connect-timeout 15 --max-time 45 \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/BelledonneCommunications/flexisip-conference/tags?per_page=100")
-            source="GitHub mirror"
-          fi
-          latest=$(jq -r '[.[] | .name? | select(type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // empty' <<<"$response")
-          if [[ -z "$latest" ]]; then
-            echo "ERROR: no stable flexisip-conference tag found" >&2
-            exit 1
-          fi
-          echo "Latest stable flexisip-conference tag ($source): $latest"
-          echo "tag=$latest" >> "$GITHUB_OUTPUT"
+          echo "tag=$(./scripts/ci/latest-stable-tag.sh BC/public/flexisip-conference BelledonneCommunications/flexisip-conference)" >> "$GITHUB_OUTPUT"
 
-      - name: Decide whether to update versions.env
+      - name: Decide whether a candidate build is needed
         id: decide
         env:
-          CUR_FLEXISIP: "${{ steps.current.outputs.flexisip }}"
-          CUR_CONFERENCE: "${{ steps.current.outputs.conference }}"
-          LATEST_FLEXISIP: "${{ steps.latest-flexisip.outputs.tag }}"
-          LATEST_CONFERENCE: "${{ steps.latest-conference.outputs.tag }}"
+          CUR_FLEXISIP: ${{ steps.current.outputs.flexisip }}
+          CUR_CONFERENCE: ${{ steps.current.outputs.conference }}
+          LATEST_FLEXISIP: ${{ steps.latest-flexisip.outputs.tag }}
+          LATEST_CONFERENCE: ${{ steps.latest-conference.outputs.tag }}
         run: |
           set -euo pipefail
-          built_flexisip=$(jq -r '.flexisip // ""' state/built.json)
-          built_conference=$(jq -r '."flexisip-conference" // ""' state/built.json)
+          built_flexisip=$(jq -r '.flexisip // empty' state/built.json)
+          built_conference=$(jq -r '."flexisip-conference" // empty' state/built.json)
+          update_flexisip=''
+          update_conference=''
 
-          update_flexisip=""
-          update_conference=""
-
-          if [[ -n "$LATEST_FLEXISIP" && "$LATEST_FLEXISIP" != "$CUR_FLEXISIP" && "$LATEST_FLEXISIP" != "$built_flexisip" ]]; then
-            update_flexisip="$LATEST_FLEXISIP"
+          if [[ "$LATEST_FLEXISIP" != "$CUR_FLEXISIP" ]]; then
+            update_flexisip=$LATEST_FLEXISIP
           fi
-          if [[ -n "$LATEST_CONFERENCE" && "$LATEST_CONFERENCE" != "$CUR_CONFERENCE" && "$LATEST_CONFERENCE" != "$built_conference" ]]; then
-            update_conference="$LATEST_CONFERENCE"
+          if [[ "$LATEST_CONFERENCE" != "$CUR_CONFERENCE" ]]; then
+            update_conference=$LATEST_CONFERENCE
           fi
 
-          # A GITHUB_TOKEN-authored versions.env commit does not trigger the
-          # push workflow. Also retry a build that failed after versions.env
-          # was updated, even when the upstream version has not changed.
           needs_build=false
           if [[ -n "$update_flexisip" || -n "$update_conference" ||
                 "$CUR_FLEXISIP" != "$built_flexisip" ||
@@ -138,46 +77,49 @@ jobs:
           fi
 
           {
-            echo "update_flexisip=${update_flexisip}"
-            echo "update_conference=${update_conference}"
-            echo "needs_build=${needs_build}"
+            echo "update_flexisip=$update_flexisip"
+            echo "update_conference=$update_conference"
+            echo "needs_build=$needs_build"
           } >> "$GITHUB_OUTPUT"
+          echo "current: $CUR_FLEXISIP / $CUR_CONFERENCE"
+          echo "latest:  $LATEST_FLEXISIP / $LATEST_CONFERENCE"
+          echo "built:   $built_flexisip / $built_conference"
+          echo "build needed: $needs_build"
 
-          echo "Decision:"
-          echo "  flexisip:        current=$CUR_FLEXISIP  built=$built_flexisip  latest=$LATEST_FLEXISIP  -> ${update_flexisip:-no-change}"
-          echo "  flexisip-conference: current=$CUR_CONFERENCE built=$built_conference latest=$LATEST_CONFERENCE -> ${update_conference:-no-change}"
-          echo "  build needed: ${needs_build}"
-
-      - name: Update versions.env
-        if: steps.decide.outputs.update_flexisip != '' || steps.decide.outputs.update_conference != ''
+      - name: Update candidate versions
+        if: ${{ steps.decide.outputs.update_flexisip != '' || steps.decide.outputs.update_conference != '' }}
+        env:
+          UPDATE_FLEXISIP: ${{ steps.decide.outputs.update_flexisip }}
+          UPDATE_CONFERENCE: ${{ steps.decide.outputs.update_conference }}
+          CURRENT_FLEXISIP: ${{ steps.current.outputs.flexisip }}
+          CURRENT_CONFERENCE: ${{ steps.current.outputs.conference }}
         run: |
           set -euo pipefail
-          new_flexisip="${{ steps.decide.outputs.update_flexisip }}"
-          new_conference="${{ steps.decide.outputs.update_conference }}"
-          cur_flexisip="${{ steps.current.outputs.flexisip }}"
-          cur_conference="${{ steps.current.outputs.conference }}"
-
+          flexisip=$UPDATE_FLEXISIP
+          conference=$UPDATE_CONFERENCE
+          if [[ -z "$flexisip" ]]; then
+            flexisip=$CURRENT_FLEXISIP
+          fi
+          if [[ -z "$conference" ]]; then
+            conference=$CURRENT_CONFERENCE
+          fi
           {
-            echo "FLEXISIP_VERSION=${new_flexisip:-$cur_flexisip}"
-            echo "FLEXISIP_CONFERENCE_VERSION=${new_conference:-$cur_conference}"
+            echo "FLEXISIP_VERSION=$flexisip"
+            echo "FLEXISIP_CONFERENCE_VERSION=$conference"
           } > versions.env
 
-          echo "New versions.env:"
-          cat versions.env
+      - name: Commit candidate versions
+        if: ${{ steps.decide.outputs.update_flexisip != '' || steps.decide.outputs.update_conference != '' }}
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add versions.env
+          git commit -m "bump: update upstream candidate versions"
+          git push origin HEAD:main
 
-      - name: Commit versions.env
-        if: steps.decide.outputs.update_flexisip != '' || steps.decide.outputs.update_conference != ''
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "bump: flexisip=${{ steps.decide.outputs.update_flexisip || steps.current.outputs.flexisip }} flexisip-conference=${{ steps.decide.outputs.update_conference || steps.current.outputs.conference }}"
-          file_pattern: versions.env
-
-      # A GITHUB_TOKEN-authored commit does NOT trigger build.yml's push trigger
-      # (GitHub's anti-loop restriction). Explicitly fire the build workflow so
-      # the version bump actually produces a new image.
-      - name: Trigger build workflow
-        if: steps.decide.outputs.needs_build == 'true'
+      - name: Trigger candidate build
+        if: ${{ steps.decide.outputs.needs_build == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh workflow run build.yml --ref main
+        run: gh workflow run build.yml --ref main

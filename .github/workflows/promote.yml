@@ -1,0 +1,115 @@
+name: promote-production
+
+on:
+  workflow_dispatch:
+    inputs:
+      flexisip_version:
+        description: Candidate Flexisip version tag to promote
+        required: true
+        type: string
+      conference_version:
+        description: Candidate flexisip-conference version tag to promote
+        required: true
+        type: string
+
+concurrency:
+  group: flexisip-main
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: potemkinco
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: verify images and update production lock
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - name: Checkout meta-repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate requested versions
+        env:
+          FLEXISIP_VERSION: ${{ inputs.flexisip_version }}
+          FLEXISIP_CONFERENCE_VERSION: ${{ inputs.conference_version }}
+        run: |
+          set -euo pipefail
+          [[ "$FLEXISIP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$FLEXISIP_CONFERENCE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+
+      - name: Read requested versions
+        env:
+          FLEXISIP_VERSION: ${{ inputs.flexisip_version }}
+          FLEXISIP_CONFERENCE_VERSION: ${{ inputs.conference_version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "FLEXISIP_VERSION=$FLEXISIP_VERSION"
+            echo "FLEXISIP_CONFERENCE_VERSION=$FLEXISIP_CONFERENCE_VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io \
+            --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Verify requested images
+        run: ./scripts/ci/verify-images.sh
+
+      - name: Resolve immutable image digests
+        id: digests
+        run: |
+          set -euo pipefail
+          proxy_image="$REGISTRY/$IMAGE_OWNER/flexisip-proxy:$FLEXISIP_VERSION"
+          conference_image="$REGISTRY/$IMAGE_OWNER/flexisip-conference:$FLEXISIP_CONFERENCE_VERSION"
+          proxy_ref=$(docker image inspect "$proxy_image" --format '{{index .RepoDigests 0}}')
+          conference_ref=$(docker image inspect "$conference_image" --format '{{index .RepoDigests 0}}')
+          proxy_digest=$(printf '%s\n' "$proxy_ref" | cut -d@ -f2)
+          conference_digest=$(printf '%s\n' "$conference_ref" | cut -d@ -f2)
+          [[ "$proxy_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$conference_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          {
+            echo "proxy=$proxy_digest"
+            echo "conference=$conference_digest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write production image lock
+        env:
+          PROXY_DIGEST: ${{ steps.digests.outputs.proxy }}
+          CONFERENCE_DIGEST: ${{ steps.digests.outputs.conference }}
+        run: |
+          set -euo pipefail
+          {
+            echo '# Explicit production image promotion state.'
+            echo '# Update this file only through the promote workflow.'
+            echo "FLEXISIP_VERSION=$FLEXISIP_VERSION"
+            echo "FLEXISIP_CONFERENCE_VERSION=$FLEXISIP_CONFERENCE_VERSION"
+            echo "FLEXISIP_PROXY_DIGEST=$PROXY_DIGEST"
+            echo "FLEXISIP_CONFERENCE_DIGEST=$CONFERENCE_DIGEST"
+          } > production.env
+
+      - name: Commit production promotion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- production.env; then
+            echo 'production.env already points at this exact promotion'
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add production.env
+          git commit -m "promote: flexisip=$FLEXISIP_VERSION conference=$FLEXISIP_CONFERENCE_VERSION"
+          git push origin HEAD:main
