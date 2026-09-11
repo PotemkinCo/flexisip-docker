@@ -135,7 +135,7 @@ to the GITHUB_TOKEN anti-loop restriction.
 ## 7. Strict version fixation
 
 Deployments must pin explicit image tags, NEVER `:latest`. `docker-compose.yml`
-now references `ghcr.io/telecrypt-io/flexisip-proxy:2.6.1` and
+now references `ghcr.io/potemkinco/flexisip-proxy:2.6.1` and
 `flexisip-conference:1.0.1`. `:latest` is only a CI convenience alias and must
 not be used on production hosts.
 
@@ -202,3 +202,24 @@ not be used on production hosts.
 - After deployment, verify: image tags/digests under `ghcr.io/potemkinco`,
   process version `2.6.1`, proxy `Max core file size` = 262144 KB, the three
   push settings above, all six containers healthy, and disk usage.
+
+## 12. 2026-09-11 boot outage and maintenance window
+
+- The host performed a clean systemd reboot at 04:03:12-04:03:17 CEST; the
+  preceding boot ended normally, with no evidence of a kernel crash or power
+  failure in the available journal.
+- During the new boot, systemd reported an ordering cycle involving
+  `/etc/systemd/system/caddy-cert-reload.path`: its `After=docker.service`
+  dependency led through `containerd.service` and `basic.target` back to
+  `paths.target`. To break the cycle, systemd deleted the `docker.service/start`
+  job. `docker.socket` and `containerd` were running, but `dockerd` and all six
+  application containers were not.
+- At 10:21 CEST the first Docker health query opened the still-listening Docker
+  socket. Socket activation started Docker and its restart policies restored
+  all six containers; they were healthy by 10:22. This was not a package update
+  or a Docker crash at 10:21. The Docker packages had been updated the previous
+  day; the 2026-09-11 unattended-upgrade run found nothing to install.
+- The boot-order fix is to remove the unnecessary `After=docker.service` from
+  `caddy-cert-reload.path`; apply and validate it only during the maintenance
+  window. Until then, treat server-side configuration, service, package, and
+  deployment changes as permitted only from 02:00 to 04:00 Europe/Berlin.
