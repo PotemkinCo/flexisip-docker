@@ -223,3 +223,11 @@ not be used on production hosts.
   `caddy-cert-reload.path`; apply and validate it only during the maintenance
   window. Until then, treat server-side configuration, service, package, and
   deployment changes as permitted only from 02:00 to 04:00 Europe/Berlin.
+- CI run `34580807472` (the retry of commit `9965f63`) completed successfully:
+  build, push, smoke test, and state publication all passed. The resulting
+  amd64 manifest digests are proxy `sha256:857f04806d47ec4194ec439a093f825519cb3598206ac942dd8e76efb8354819`
+  and conference `sha256:62b1081084f1554915911f15ec72f3eff54d24f48566494ad88218482356f55b`.
+- The live server was deliberately not changed during working hours after this
+  rule was agreed. Until the maintenance window, it still runs the prior
+  TeleCrypt-namespaced compose configuration and has stale `versions.env`
+  metadata even though its running binaries were already 2.6.1/1.0.1.
