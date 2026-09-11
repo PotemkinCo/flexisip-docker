@@ -278,3 +278,47 @@ were therefore performed during working hours.
   `docker-image-prune.timer` is enabled weekly on Sunday around 03:30 with a
   30-minute random delay and prunes dangling images older than seven days.
   Journald is using 59 MiB and has `MaxRetentionSec=1day`.
+
+## 14. 2026-09-11 CI simplification, promotion lock, and credential rotation
+
+- Repository implementation commit: `19a5933` (`chore: simplify CI and lock
+  production images`), followed by `cac8006` to make static checks work on the
+  minimal GitHub runner image. The canonical remote is
+  `https://github.com/PotemkinCo/flexisip-docker.git`.
+- The build workflow no longer builds or releases `.deb` packages and no longer
+  publishes `latest`. Nightly `auto-bump.yml` updates candidate `versions.env`
+  and explicitly dispatches the build; it never changes production.
+- `production.env` is the tracked production lock. It currently records
+  Flexisip `2.6.1` and conference `1.0.1` with proxy digest
+  `sha256:b6d150a344ca3048939fedc0430b9a5c954a98b044a78e4def0e689ea35186bb`
+  and conference digest
+  `sha256:8163c91c7d960d5ab23e16e0ff530b109b8e546abd80c15f02737987e35255bb`.
+  `promote.yml` verifies versioned images and updates this file; it does not
+  deploy to the server. `scripts/compose.sh` is the canonical runtime wrapper.
+- CI logic is shared in `scripts/ci/`: stable-tag detection with GitLab retry
+  and GitHub fallback, upstream clone/submodule preparation, and image smoke
+  verification. `scripts/package-lock.json` pins Playwright Core `1.62.0`.
+- Production credential rotation completed from a staged server-side procedure:
+  MariaDB root and conference application passwords were changed, the static
+  Coturn user/password was changed, and all six provisioning XML profiles were
+  updated. SIP user credentials and QR/token files were not changed. The old
+  profile TURN credentials are invalid; clients must re-fetch/re-add profiles
+  before TURN media can work. SIP authentication is independent of this
+  rotation. The static TURN credential model remains intentional; no REST
+  credential service was introduced.
+- Rollback backup for the rotation:
+  `/opt/flexisip-docker/backups/20260911T134959Z-credential-rotation`.
+  It contains the old environment/configuration, a full MariaDB dump, and the
+  old provisioning tree. It contains no new credentials in the repository or
+  notes.
+- All six containers are healthy after recreating MariaDB, Coturn, conference,
+  and the proxy. The running proxy and conference containers now use the exact
+  digests in `production.env`. HTTPS fetches of all six XML profiles succeeded.
+- `/etc/systemd/journald.conf.d/10-flexisip-limits.conf` now sets
+  `SystemMaxUse=200M` and `MaxRetentionSec=1day`. The scoped weekly Docker
+  cleanup now removes unused images older than seven days; active images are
+  protected by container references. The first run removed 2.703 GiB of old
+  TeleCrypt image data. Final disk state was 11 GiB free (44% used); journal
+  usage was 58.9 MiB.
+- The `caddy-provisioning.service` unit remains absent. Caddy continues to
+  serve the rotated profiles from `/opt/linphone-provisioning`.
