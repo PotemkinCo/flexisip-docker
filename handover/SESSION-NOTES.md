@@ -238,3 +238,43 @@ not be used on production hosts.
   should be constrained to the 02:00-04:00 Europe/Berlin window if that policy
   applies to unattended package updates as well; `Persistent=true` should also
   be reviewed so a missed run is not replayed during working hours.
+
+The normal maintenance-window rule above was explicitly superseded for this
+setup by the user on 2026-09-11; the production changes and reboot validation
+were therefore performed during working hours.
+
+## 13. 2026-09-11 production setup completed
+
+- Rollback snapshot created before changing the server:
+  `/opt/flexisip-docker/backups/20260911T113659Z`. It contains the compose
+  files, versions/configuration, service definitions, container inspections,
+  and the prior proxy core dump under `cores/proxy-core-pre-change`.
+- Removed the unnecessary `After=docker.service` from
+  `/etc/systemd/system/caddy-cert-reload.path`; `systemd-analyze verify`
+  passed and the path is now active without a Docker dependency. This removes
+  the boot ordering cycle that deleted Docker's start job.
+- APT timers now run at 02:00 (`apt-daily`) and 03:00
+  (`apt-daily-upgrade`) Europe/Berlin, with zero random delay and
+  `Persistent=false`. Both are enabled and scheduled accordingly.
+- Production now uses `ghcr.io/potemkinco/flexisip-proxy:2.6.1` and
+  `ghcr.io/potemkinco/flexisip-conference:1.0.1`; the pulled registry digests
+  were proxy `sha256:b6d150a344ca3048939fedc0430b9a5c954a98b044a78e4def0e689ea35186bb`
+  and conference `sha256:8163c91c7d960d5ab23e16e0ff530b109b8e546abd80c15f02737987e35255bb`.
+  `versions.env` is now 2.6.1/1.0.1.
+- Effective Flexisip settings are `timeout=0`, `retransmission-count=3`,
+  `retransmission-interval=7`, and `fork-late=true`. The proxy process is
+  Flexisip 2.6.1. Core dumps are bounded at 256 MiB (`RLIMIT_CORE` soft and
+  hard), and the persistent core directory is
+  `/var/opt/belledonne-communications/cores`.
+- A controlled reboot completed successfully. After boot, Docker, containerd,
+  Caddy, and `caddy-cert-reload.path` were active; all six containers were
+  healthy; SIP listeners were present on TCP 5061/5060; and the boot journal
+  contained no ordering-cycle or deleted-Docker-start-job message. Proxy
+  restart count is 0; conference restart count 5 is inherited from the earlier
+  boot restoration history, not from this deployment.
+- Post-reboot disk state: 13 GiB used of 25 GiB (55%), 11 GiB available.
+  Docker reports 2.586 GiB reclaimable in unused images, mostly the old image
+  set; do not remove it without confirming rollback policy. The existing
+  `docker-image-prune.timer` is enabled weekly on Sunday around 03:30 with a
+  30-minute random delay and prunes dangling images older than seven days.
+  Journald is using 59 MiB and has `MaxRetentionSec=1day`.
