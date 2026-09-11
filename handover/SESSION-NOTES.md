@@ -322,3 +322,7 @@ were therefore performed during working hours.
   usage was 58.9 MiB.
 - The `caddy-provisioning.service` unit remains absent. Caddy continues to
   serve the rotated profiles from `/opt/linphone-provisioning`.
+- GitHub Actions run `34606146976` passed end-to-end after the refactor:
+  proxy build, conference build, image smoke test, and state publication all
+  succeeded. The production lock was not changed by this candidate build;
+  promotion remains an explicit workflow action.
