@@ -480,7 +480,7 @@ jobs:
           actual=$(docker run --rm --entrypoint flexisip \
             "ghcr.io/${IMAGE_OWNER}/flexisip-proxy:${FLEXISIP_VERSION}" --version)
           echo "proxy version: $actual"
-          if ! grep -q "flexisip version: ${FLEXISIP_VERSION}" <<<"$actual"; then
+          if ! grep -Eq "flexisip[[:space:]]+version: ${FLEXISIP_VERSION}([[:space:]]|$)" <<<"$actual"; then
             echo "FAIL: image version does not match versions.env" >&2
             exit 1
           fi
