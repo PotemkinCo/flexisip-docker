@@ -22,6 +22,9 @@ src-conf/
 # TLS certificates
 certs/
 
+# Runtime crash artifacts — retained on the deployment host, never committed.
+core-dumps/
+
 # IDE
 .vscode/
 .idea/

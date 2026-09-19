@@ -326,3 +326,35 @@ were therefore performed during working hours.
   proxy build, conference build, image smoke test, and state publication all
   succeeded. The production lock was not changed by this candidate build;
   promotion remains an explicit workflow action.
+
+## 15. 2026-09-19 push-retry experiment and core preservation
+
+- The production server remains on Flexisip `2.6.1` with the locked proxy
+  digest `sha256:b6d150a344ca3048939fedc0430b9a5c954a98b044a78e4def0e689ea35186bb`.
+  The deployment host is updated by deliberate file copies; it must not pull
+  from this repository.
+- Before recreating the proxy, the existing crash artifact was copied from the
+  Docker volume to
+  `/opt/flexisip-docker/core-dumps/core.flexisip.20260918T105723+0200`. It is
+  41,639,936 bytes, mode 600, and
+  has SHA-256
+  `9580c3c36878bf0a41e68e9629b27eadf7df7a1b9b14ac569b20dbe47d7ab46d`.
+- `/etc/sysctl.d/99-flexisip-core.conf` now persists
+  `kernel.core_pattern=core.%e.%p.%t`; the live value matches. The proxy
+  Compose service bind-mounts `./core-dumps` to
+  `/var/opt/belledonne-communications/cores` while retaining the named data
+  volume. The proxy working directory is that core directory, so future dumps
+  receive unique names and are visible on the host.
+- The proxy was recreated immediately after Compose validation. Effective
+  settings are now `timeout=0`, `retransmission-count=0`,
+  `retransmission-interval=7`, `fork-late=true`, and
+  `dump-corefiles=false`; `RLIMIT_CORE` remains capped at 256 MiB. A count of
+  zero disables Push Notification Request retransmissions, so the 7-second
+  interval is retained for easy rollback but is inactive in this experiment.
+- An isolated child-process crash probe created a host-visible ELF core with a
+  unique `core.sh.<pid>.<timestamp>` name, then the disposable artifact and
+  container were removed. The preserved Flexisip core was not touched.
+- Post-change state was healthy: all six containers were healthy, the proxy
+  started Flexisip `2.6.1`, and TCP 5061 plus loopback UDP/TCP 5060 listeners
+  were present. This section supersedes the earlier `retransmission-count=3`
+  runtime state recorded above.

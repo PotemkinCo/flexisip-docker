@@ -109,8 +109,7 @@ services:
     # SYS_RESOURCE lets the proxy raise RLIMIT_NOFILE (harmless warning otherwise).
     cap_add:
       - SYS_RESOURCE
-    # Enable crash dumps while capping each dump at 256 MiB. The proxy
-    # entrypoint places them in the persistent proxy_data volume.
+    # Enable crash dumps while capping each dump at 256 MiB.
     ulimits:
       core:
         soft: 268435456
@@ -127,6 +126,9 @@ services:
       - ./config/users.conf:/etc/flexisip/users.conf:ro
       - ./config/domain-registrations.conf:/etc/flexisip/domain-registrations.conf:ro
       - proxy_data:/var/opt/belledonne-communications
+      # Keep crash artifacts in an explicit host directory instead of hiding
+      # them inside the named volume; the host kernel supplies unique names.
+      - ./core-dumps:/var/opt/belledonne-communications/cores
     depends_on:
       acme:
         condition: service_healthy
