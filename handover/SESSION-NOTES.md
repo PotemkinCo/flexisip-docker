@@ -358,3 +358,31 @@ were therefore performed during working hours.
   started Flexisip `2.6.1`, and TCP 5061 plus loopback UDP/TCP 5060 listeners
   were present. This section supersedes the earlier `retransmission-count=3`
   runtime state recorded above.
+
+### Closure details
+
+- Pre-change evidence: the proxy process working directory was already
+  `/var/opt/belledonne-communications/cores`; the old dump was inside the
+  `flexisip-docker_proxy_data` named volume, with `kernel.core_pattern=core`.
+  The container's soft and hard `RLIMIT_CORE` values were both 268435456
+  bytes. The proxy image and digest were unchanged by this work.
+- The production Compose/config files differed from the repository template:
+  production has the real SIP IP and other server-local edits. Only the
+  agreed mount, `retransmission-count=0`, and explicit
+  `dump-corefiles=false` were applied in production; the template was not
+  copied wholesale. The repository template remains generic and uses
+  `<SIP_IP>`.
+- The first two remote text-edit attempts failed because the server's `sed`
+  rejected multiline/append syntax. They made no service change. A safe
+  temporary-file rewrite then inserted the single core bind mount, Compose
+  validation passed on the server, and only `flexisip-proxy` was recreated.
+- The first disposable crash probe targeted the container's PID 1, which
+  ignored the default SIGSEGV handling and exited cleanly. The corrected probe
+  crashed a child process, produced a valid ELF core at
+  `core.sh.7.1789795500`, and the exact disposable artifact/container were
+  removed afterward. The preserved Flexisip dump was not altered.
+- The workstation's `docker` command is a Podman shim whose local runtime is
+  read-only, so local Compose validation could not run. Production
+  `docker compose config --quiet` passed, and runtime verification succeeded.
+- Repository commit `7d08e49` contains the configuration, ignore rule, and
+  this handover record; it was pushed to `PotemkinCo/flexisip-docker` `main`.
